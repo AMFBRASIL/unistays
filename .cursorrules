@@ -1,0 +1,11 @@
+# Cursor Rules for Unistays Project
+
+## Spell Check Configuration
+- Disable spell checking for technical terms
+- Ignore Portuguese words and SQL keywords
+- Focus on code quality, not spelling
+
+## Code Style
+- Use TypeScript/React best practices
+- Follow existing code patterns
+- Maintain consistency across the codebase

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confirmação de Reserva - {{reservationNumber}}</title>
+  <style>
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; background-color: #f5f5f5; }
+    .wrapper { background-color: #f5f5f5; padding: 40px 20px; }
+    .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.08); overflow: hidden; }
+    .header { background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%); padding: 32px 24px; text-align: center; }
+    .header h1 { margin: 0; color: #ffffff; font-size: 24px; font-weight: 700; }
+    .header .property { margin: 8px 0 0 0; color: rgba(255,255,255,0.95); font-size: 14px; }
+    .body { padding: 24px; }
+    .greeting { margin: 0 0 16px 0; color: #333; font-size: 16px; }
+    .intro { margin: 0 0 20px 0; color: #555; font-size: 15px; line-height: 1.5; }
+    table.details { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+    table.details td { padding: 10px 0; border-bottom: 1px solid #eee; vertical-align: top; }
+    table.details td:first-child { color: #666; }
+    table.details td:last-child { text-align: right; font-weight: 500; }
+    table.details tr:last-child td { border-bottom: none; }
+    .total-row td:last-child { font-weight: 600 !important; }
+    .balance-row td:last-child { font-weight: 600; color: #0d9488; }
+    .special-requests { margin: 0 0 8px 0; color: #555; font-size: 14px; }
+    .special-requests-text { margin: 0 0 20px 0; color: #666; font-size: 14px; }
+    .property-box { background: #f0fdfa; border-left: 4px solid #0d9488; padding: 16px; border-radius: 8px; }
+    .property-box .name { margin: 0 0 4px 0; color: #333; font-size: 14px; font-weight: 600; }
+    .property-box p { margin: 0; color: #666; font-size: 13px; }
+    .footer { margin: 20px 0 0 0; color: #888; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="container">
+      <div class="header">
+        <h1>Reserva confirmada</h1>
+        <p class="property">{{propertyName}}</p>
+      </div>
+      <div class="body">
+        <p class="greeting">Olá, <strong>{{guestName}}</strong>!</p>
+        <p class="intro">Sua reserva foi confirmada. Abaixo estão os detalhes da sua estadia <strong>{{reservationNumber}}</strong>.</p>
+
+        <table class="details" role="presentation">
+          <tr>
+            <td>Check-in</td>
+            <td>{{checkIn}}{{#checkInTime}} às {{checkInTime}}{{/checkInTime}}</td>
+          </tr>
+          <tr>
+            <td>Check-out</td>
+            <td>{{checkOut}}{{#checkOutTime}} às {{checkOutTime}}{{/checkOutTime}}</td>
+          </tr>
+          <tr>
+            <td>Noites</td>
+            <td>{{nights}}</td>
+          </tr>
+          <tr>
+            <td>Hóspedes</td>
+            <td>{{adults}} adulto(s){{#children}}, {{children}} criança(s){{/children}}</td>
+          </tr>
+          <tr>
+            <td>Acomodação</td>
+            <td>{{roomName}}{{#unitNumber}} (Unidade {{unitNumber}}){{/unitNumber}}</td>
+          </tr>
+          <tr>
+            <td>Plano tarifário</td>
+            <td>{{ratePlan}}</td>
+          </tr>
+          <tr>
+            <td>Valor total</td>
+            <td>{{total}}</td>
+          </tr>
+          <tr>
+            <td>Valor pago</td>
+            <td>{{paid}}</td>
+          </tr>
+          <tr class="balance-row">
+            <td>Restante a pagar</td>
+            <td>{{balance}}</td>
+          </tr>
+        </table>
+
+        {{#specialRequests}}
+        <p class="special-requests"><strong>Pedidos especiais:</strong></p>
+        <p class="special-requests-text">{{specialRequests}}</p>
+        {{/specialRequests}}
+
+        <div class="property-box">
+          <p class="name">{{propertyName}}</p>
+          {{#propertyAddress}}<p>{{propertyAddress}}</p>{{/propertyAddress}}
+          {{#propertyPhone}}<p>Tel: {{propertyPhone}}</p>{{/propertyPhone}}
+          {{#propertyEmail}}<p>E-mail: {{propertyEmail}}</p>{{/propertyEmail}}
+        </div>
+
+        <p class="footer">Em caso de dúvidas ou alterações, entre em contato com a propriedade. Boa estadia!</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

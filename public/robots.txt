@@ -1,0 +1,46 @@
+# robots.txt for Uni | Stays Website
+
+User-agent: *
+Allow: /website
+Allow: /website/features
+Allow: /website/pricing
+Allow: /website/screenshots
+Allow: /website/videos
+Allow: /website/contact
+
+# Disallow private/admin routes
+Disallow: /dashboard
+Disallow: /reservations
+Disallow: /rooms
+Disallow: /guests
+Disallow: /login
+Disallow: /api
+Disallow: /settings
+Disallow: /registrations
+
+# Sitemap location
+Sitemap: https://unistays.com.br/sitemap.xml
+
+# Crawl-delay for better server performance
+Crawl-delay: 1
+
+# Specific bot rules
+User-agent: Googlebot
+Allow: /website
+Allow: /website/*
+Crawl-delay: 0.5
+
+User-agent: Bingbot
+Allow: /website
+Allow: /website/*
+Crawl-delay: 1
+
+# Block bad bots
+User-agent: AhrefsBot
+Crawl-delay: 10
+
+User-agent: SemrushBot
+Crawl-delay: 10
+
+User-agent: DotBot
+Disallow: /
