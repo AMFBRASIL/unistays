@@ -498,6 +498,8 @@ export class BookingService {
                         nights: reservation.nights,
                         guestId: reservation.guestId,
                         propertyId: reservation.propertyId,
+                        unitId: reservation.unitId,
+                        externalId: reservation.externalId,
                     },
                     guest: {
                         id: guest.id,

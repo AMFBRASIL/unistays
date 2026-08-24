@@ -8,7 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { ConfigureIntegrationModal } from "@/components/integrations/ConfigureIntegrationModal";
 import { SelfmartIntegrationModal } from "@/components/integrations/SelfmartIntegrationModal";
+import { ChannexIntegrationPanel } from "@/components/integrations/ChannexIntegrationPanel";
 import { loadSelfmartConfig } from "@/lib/selfmart";
+import { api } from "@/lib/api";
 import { SMTPConfigModal } from "@/components/registrations/SMTPConfigModal";
 import { OAuthGoogleModal } from "@/components/registrations/OAuthGoogleModal";
 import { WebhooksModal } from "@/components/registrations/WebhooksModal";
@@ -64,73 +66,83 @@ interface Integration {
 }
 
 const integrations: Integration[] = [
-  // Channel Managers / OTAs
+  // Channel Manager — Channex is the only CM hub (PMS ↔ OTAs)
+  {
+    id: "channex",
+    name: "Channex",
+    description:
+      "Channel Manager oficial do Unistays. Conecta o PMS a Booking.com, Airbnb, Expedia e dezenas de OTAs via API Channex.io (ARI + reservas).",
+    category: "channel_manager",
+    logo: "CX",
+    status: "available",
+    popular: true,
+    features: ["ARI (disponibilidade/preços)", "Booking Revisions Feed", "Webhooks", "Multi-OTA"],
+  },
   {
     id: "booking",
     name: "Booking.com",
-    description: "Maior OTA do mundo. Sincronize disponibilidade, tarifas e reservas automaticamente.",
+    description: "Via Channex — sincronize disponibilidade, tarifas e reservas automaticamente.",
     category: "channel_manager",
     logo: "🅱️",
-    status: "connected",
+    status: "coming_soon",
     popular: true,
-    features: ["Sync automático", "Gestão de tarifas", "Reservas em tempo real"],
+    features: ["Via Channex", "Sync automático", "Reservas em tempo real"],
   },
   {
     id: "airbnb",
     name: "Airbnb",
-    description: "Conecte seu inventário ao Airbnb para gestão unificada de reservas.",
+    description: "Via Channex — inventário e canais mapeados no extranet Channex.",
     category: "channel_manager",
     logo: "🏠",
-    status: "connected",
+    status: "coming_soon",
     popular: true,
-    features: ["iCal sync", "Mensagens automáticas", "Gestão de preços"],
+    features: ["Via Channex", "Mapping OTA"],
   },
   {
     id: "expedia",
     name: "Expedia Group",
-    description: "Inclui Expedia, Hotels.com, Vrbo e mais de 200 sites parceiros.",
+    description: "Via Channex — Expedia, Hotels.com, Vrbo e parceiros.",
     category: "channel_manager",
     logo: "✈️",
-    status: "available",
+    status: "coming_soon",
     popular: true,
-    features: ["Multi-site", "Promoções", "Revenue management"],
+    features: ["Via Channex", "Multi-site"],
   },
   {
     id: "decolar",
     name: "Decolar",
-    description: "Maior agência de viagens online da América Latina.",
+    description: "Via canais suportados na Channex / mapping regional quando disponível.",
     category: "channel_manager",
     logo: "🌎",
-    status: "available",
-    features: ["Mercado LATAM", "Sync bidirecional"],
+    status: "coming_soon",
+    features: ["Mercado LATAM"],
   },
   {
     id: "tripadvisor",
     name: "TripAdvisor",
-    description: "Conecte suas avaliações e disponibilidade ao TripAdvisor.",
+    description: "Conecte avaliações e disponibilidade (planejado).",
     category: "channel_manager",
     logo: "🦉",
-    status: "available",
-    features: ["Reviews sync", "Instant booking"],
+    status: "coming_soon",
+    features: ["Reviews sync"],
   },
   {
     id: "google_hotels",
     name: "Google Hotel Ads",
-    description: "Apareça diretamente nos resultados de busca do Google.",
+    description: "Metasearch — planejado após Channel Manager estável.",
     category: "channel_manager",
     logo: "🔍",
-    status: "available",
-    popular: true,
-    features: ["Metasearch", "Free booking links"],
+    status: "coming_soon",
+    features: ["Metasearch"],
   },
   {
     id: "hostelworld",
     name: "Hostelworld",
-    description: "Ideal para hostels e acomodações compartilhadas.",
+    description: "Ideal para hostels — planejado.",
     category: "channel_manager",
     logo: "🛏️",
-    status: "available",
-    features: ["Dorms management", "Backpackers market"],
+    status: "coming_soon",
+    features: ["Dorms management"],
   },
 
   // Revenue Management
@@ -518,6 +530,8 @@ const Integrations = () => {
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [selfmartModalOpen, setSelfmartModalOpen] = useState(false);
   const [selfmartEnabled, setSelfmartEnabled] = useState(false);
+  const [channexConnected, setChannexConnected] = useState(false);
+  const [channexModalOpen, setChannexModalOpen] = useState(false);
   
   // Developer modals
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
@@ -526,9 +540,23 @@ const Integrations = () => {
   const [appsModalOpen, setAppsModalOpen] = useState(false);
   const [webhooksModalOpen, setWebhooksModalOpen] = useState(false);
 
+  const refreshChannexStatus = async () => {
+    try {
+      const res = await api.getIntegrationConnections({ provider: "channex" });
+      const connected = !!(
+        res.success &&
+        res.data?.connections?.some((c) => c.status === "connected")
+      );
+      setChannexConnected(connected);
+    } catch {
+      setChannexConnected(false);
+    }
+  };
+
   useEffect(() => {
     const config = loadSelfmartConfig();
     setSelfmartEnabled(config.enabled);
+    void refreshChannexStatus();
   }, []);
 
   const integrationsWithRuntimeStatus = integrations.map((integration) => {
@@ -538,12 +566,21 @@ const Integrations = () => {
         status: (selfmartEnabled ? "connected" : "available") as Integration["status"],
       };
     }
+    if (integration.id === "channex") {
+      return {
+        ...integration,
+        status: (channexConnected ? "connected" : "available") as Integration["status"],
+      };
+    }
     return integration;
   });
 
   const handleConfigureClick = (integration: Integration) => {
     // Handle developer-specific integrations
     switch (integration.id) {
+      case "channex":
+        setChannexModalOpen(true);
+        return;
       case "selfmart":
         setSelfmartModalOpen(true);
         return;
@@ -861,6 +898,11 @@ const Integrations = () => {
           open={selfmartModalOpen}
           onOpenChange={setSelfmartModalOpen}
           onSaved={(config) => setSelfmartEnabled(config.enabled)}
+        />
+        <ChannexIntegrationPanel
+          open={channexModalOpen}
+          onOpenChange={setChannexModalOpen}
+          onConnectionChange={() => void refreshChannexStatus()}
         />
       </div>
     </DashboardLayout>

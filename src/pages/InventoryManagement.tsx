@@ -47,6 +47,7 @@ import { AddStockModal } from "@/components/inventory/AddStockModal";
 import { NewInventoryItemModal } from "@/components/inventory/NewInventoryItemModal";
 import { ViewOrderModal } from "@/components/inventory/ViewOrderModal";
 import { EditOrderStatusModal } from "@/components/inventory/EditOrderStatusModal";
+import { ImportNFeWizardModal } from "@/components/inventory/ImportNFeWizardModal";
 
 type PropertyType = "hotel" | "apart-hotel" | "loft" | "temporada";
 
@@ -218,6 +219,7 @@ export default function InventoryManagement() {
   const [viewOrderModalOpen, setViewOrderModalOpen] = useState(false);
   const [editOrderStatusModalOpen, setEditOrderStatusModalOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<PurchaseOrder | null>(null);
+  const [importNFeModalOpen, setImportNFeModalOpen] = useState(false);
 
   const [items, setItems] = useState<ApiInventoryItem[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
@@ -397,7 +399,7 @@ export default function InventoryManagement() {
               <ArrowRightLeft className="w-4 h-4" />
               Transferência
             </Button>
-            <Button variant="outline" className="gap-2">
+            <Button variant="outline" className="gap-2" onClick={() => setImportNFeModalOpen(true)}>
               <Upload className="w-4 h-4" />
               Importar
             </Button>
@@ -946,6 +948,14 @@ export default function InventoryManagement() {
           onSuccess={() => {
             fetchOrders();
             setSelectedOrder(null);
+          }}
+        />
+        <ImportNFeWizardModal
+          open={importNFeModalOpen}
+          onOpenChange={setImportNFeModalOpen}
+          onSuccess={() => {
+            fetchItems();
+            fetchMovements();
           }}
         />
       </div>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -39,10 +39,11 @@ import {
   CheckCircle2,
   ListFilter,
   LayoutGrid,
+  Loader2,
+  Package,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
-import { useEffect } from "react";
 import {
   Select,
   SelectContent,
@@ -50,7 +51,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import * as LucideIcons from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 const pricingModels = [
   { 
@@ -76,18 +79,38 @@ interface RoomTypeModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const amenities = [
-  { id: "wifi", icon: Wifi, label: "Wi-Fi" },
-  { id: "tv", icon: Tv, label: "Smart TV" },
-  { id: "ac", icon: AirVent, label: "Ar Condicionado" },
-  { id: "coffee", icon: Coffee, label: "Cafeteira" },
-  { id: "bath", icon: Bath, label: "Banheira" },
-  { id: "parking", icon: Car, label: "Estacionamento" },
-  { id: "breakfast", icon: UtensilsCrossed, label: "Café da Manhã" },
-  { id: "gym", icon: Dumbbell, label: "Academia" },
-  { id: "pool", icon: Waves, label: "Piscina" },
-  { id: "view", icon: Mountain, label: "Vista" },
-];
+interface AmenityOption {
+  id: number;
+  name: string;
+  code?: string;
+  icon?: string | null;
+  category?: string;
+  status?: string;
+}
+
+const amenityIconAliases: Record<string, string> = {
+  wifi: "Wifi",
+  tv: "Tv",
+  "smart-tv": "Tv",
+  ac: "AirVent",
+  coffee: "Coffee",
+  bath: "Bath",
+  parking: "Car",
+  car: "Car",
+  breakfast: "UtensilsCrossed",
+  gym: "Dumbbell",
+  pool: "Waves",
+  view: "Mountain",
+  "room-service": "ConciergeBell",
+};
+
+const getAmenityIcon = (iconName: string | null | undefined, code?: string): LucideIcon => {
+  const raw = (iconName || code || "").trim();
+  if (!raw) return Package;
+  const aliased = amenityIconAliases[raw] || amenityIconAliases[raw.toLowerCase()] || raw;
+  const icons = LucideIcons as unknown as Record<string, LucideIcon | undefined>;
+  return icons[aliased] || icons[raw] || Package;
+};
 
 const propertyTypes = [
   { id: "hotel", icon: Hotel, label: "Hotel", color: "from-blue-500 to-blue-600", defaultPricing: "per_person" },
@@ -98,8 +121,11 @@ const propertyTypes = [
 const PLACEHOLDER_IMAGE = "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=400";
 
 export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
+  const queryClient = useQueryClient();
   const [step, setStep] = useState(1);
   const [properties, setProperties] = useState<{ id: number; name?: string }[]>([]);
+  const [amenities, setAmenities] = useState<AmenityOption[]>([]);
+  const [amenitiesLoading, setAmenitiesLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     propertyId: "" as string,
@@ -116,32 +142,62 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
     pricePerChild: "",
     extraPersonFee: "",
     size: "",
-    selectedAmenities: [] as string[],
+    selectedAmenities: [] as number[],
     isActive: true,
   });
 
   useEffect(() => {
-    if (open) {
-      api.getProperties().then((res) => {
-        if (res.success && res.data?.properties) {
-          const list = (res.data.properties as { id: number; name?: string }[]) ?? [];
-          setProperties(list);
-          if (list.length > 0 && !formData.propertyId) {
-            setFormData((prev) => ({ ...prev, propertyId: String(list[0].id) }));
-          }
+    if (!open) return;
+
+    api.getProperties().then((res) => {
+      if (res.success && res.data?.properties) {
+        const list = (res.data.properties as { id: number; name?: string }[]) ?? [];
+        setProperties(list);
+        if (list.length > 0) {
+          setFormData((prev) => ({
+            ...prev,
+            propertyId: prev.propertyId || String(list[0].id),
+          }));
         }
-      });
-    }
+      }
+    });
+
+    setAmenitiesLoading(true);
+    api
+      .getAmenities(undefined, undefined, "active")
+      .then((res) => {
+        if (res.success && res.data?.amenities) {
+          const list = (res.data.amenities as AmenityOption[]) ?? [];
+          setAmenities(list.filter((a) => a?.id != null));
+        } else {
+          setAmenities([]);
+        }
+      })
+      .catch((e) => {
+        console.error(e);
+        setAmenities([]);
+        toast({
+          title: "Aviso",
+          description: "Não foi possível carregar as amenidades da base.",
+          variant: "destructive",
+        });
+      })
+      .finally(() => setAmenitiesLoading(false));
   }, [open]);
 
-  const toggleAmenity = (id: string) => {
-    setFormData(prev => ({
+  const toggleAmenity = (id: number) => {
+    setFormData((prev) => ({
       ...prev,
       selectedAmenities: prev.selectedAmenities.includes(id)
-        ? prev.selectedAmenities.filter(a => a !== id)
-        : [...prev.selectedAmenities, id]
+        ? prev.selectedAmenities.filter((a) => a !== id)
+        : [...prev.selectedAmenities, id],
     }));
   };
+
+  const selectedAmenityNames = useMemo(() => {
+    const set = new Set(formData.selectedAmenities);
+    return amenities.filter((a) => set.has(a.id)).map((a) => a.name);
+  }, [amenities, formData.selectedAmenities]);
 
   const handleSubmit = async () => {
     const propertyId = parseInt(formData.propertyId, 10);
@@ -179,11 +235,12 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
         infantPrice: 0,
         pricingStyle: (formData.pricingModel || "per_unit") as "per_unit" | "per_person",
         sizeM2: formData.size ? parseFloat(formData.size) : null,
-        status: "active",
-        amenityIds: [],
+        status: formData.isActive ? "active" : "inactive",
+        amenityIds: formData.selectedAmenities,
       });
       if (res.success) {
         toast({ title: "Tipo de Quarto Criado", description: `${formData.name} foi cadastrado com sucesso!` });
+        void queryClient.invalidateQueries({ queryKey: ["roomTypes"] });
         onOpenChange(false);
         setStep(1);
         setFormData({
@@ -602,30 +659,66 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
 
             {step === 3 && (
               <div className="space-y-6">
-                {/* Amenities */}
+                {/* Amenities from database */}
                 <div className="space-y-4">
-                  <Label className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                    <Wifi className="h-5 w-5 text-cyan-600" />
-                    Amenidades Incluídas
-                  </Label>
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                    {amenities.map((amenity) => (
-                      <button
-                        key={amenity.id}
-                        onClick={() => toggleAmenity(amenity.id)}
-                        className={`p-4 rounded-xl border-2 transition-all ${
-                          formData.selectedAmenities.includes(amenity.id)
-                            ? "border-cyan-500 bg-cyan-50"
-                            : "border-gray-200 bg-gray-50 hover:border-gray-300"
-                        }`}
-                      >
-                        <amenity.icon className={`h-6 w-6 mx-auto mb-2 ${
-                          formData.selectedAmenities.includes(amenity.id) ? "text-cyan-600" : "text-gray-400"
-                        }`} />
-                        <p className="text-xs font-medium text-center text-gray-700">{amenity.label}</p>
-                      </button>
-                    ))}
+                  <div className="flex items-center justify-between gap-3">
+                    <Label className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                      <Wifi className="h-5 w-5 text-cyan-600" />
+                      Amenidades Incluídas
+                    </Label>
+                    {!amenitiesLoading && (
+                      <Badge variant="secondary" className="text-xs">
+                        {amenities.length} cadastradas · {formData.selectedAmenities.length} selecionadas
+                      </Badge>
+                    )}
                   </div>
+
+                  {amenitiesLoading ? (
+                    <div className="flex items-center justify-center gap-2 p-8 text-muted-foreground border border-dashed rounded-xl">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      Carregando amenidades...
+                    </div>
+                  ) : amenities.length === 0 ? (
+                    <div className="text-center p-8 border border-dashed rounded-xl bg-muted/20">
+                      <Package className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+                      <p className="text-muted-foreground font-medium">Nenhuma amenidade ativa na base</p>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Cadastre em Cadastros → Amenidades e volte aqui.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 max-h-[320px] overflow-y-auto pr-1">
+                      {amenities.map((amenity) => {
+                        const Icon = getAmenityIcon(amenity.icon, amenity.code);
+                        const selected = formData.selectedAmenities.includes(amenity.id);
+                        return (
+                          <button
+                            key={amenity.id}
+                            type="button"
+                            onClick={() => toggleAmenity(amenity.id)}
+                            className={`p-4 rounded-xl border-2 transition-all ${
+                              selected
+                                ? "border-cyan-500 bg-cyan-50"
+                                : "border-gray-200 bg-gray-50 hover:border-gray-300"
+                            }`}
+                          >
+                            <Icon className={`h-6 w-6 mx-auto mb-2 ${
+                              selected ? "text-cyan-600" : "text-gray-400"
+                            }`} />
+                            <p className="text-xs font-medium text-center text-gray-700 line-clamp-2">
+                              {amenity.name}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {selectedAmenityNames.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Selecionadas: {selectedAmenityNames.join(", ")}
+                    </p>
+                  )}
                 </div>
 
                 {/* Status */}

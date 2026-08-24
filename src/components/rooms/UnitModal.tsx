@@ -114,6 +114,8 @@ interface UnitModalProps {
     editRoom?: Room | null;
     selectedPropertyId?: number;
     properties?: Property[];
+    /** Chamado após criar/atualizar com sucesso (ex.: refetch do mapa em /rooms) */
+    onSaved?: () => void;
 }
 
 const propertyTypesConfig: Record<string, any> = {
@@ -228,7 +230,7 @@ const amenitiesGroups = [
     },
 ];
 
-export function UnitModal({ open, onOpenChange, editRoom, selectedPropertyId, properties: propertiesProp = [] }: UnitModalProps) {
+export function UnitModal({ open, onOpenChange, editRoom, selectedPropertyId, properties: propertiesProp = [], onSaved }: UnitModalProps) {
     const [currentStep, setCurrentStep] = useState(1);
 
     const { data: fetchedProperties } = useQuery({
@@ -510,11 +512,22 @@ export function UnitModal({ open, onOpenChange, editRoom, selectedPropertyId, pr
         if (currentStep > 1) setCurrentStep(currentStep - 1);
     };
 
+    const invalidateUnitQueries = () => {
+        // /rooms usa room-map-data; outras telas podem usar units
+        void queryClient.invalidateQueries({ queryKey: ["room-map-data"] });
+        void queryClient.invalidateQueries({ queryKey: ["units"] });
+        if (editRoom?.id) {
+            void queryClient.invalidateQueries({ queryKey: ["unit-details", editRoom.id] });
+            void queryClient.invalidateQueries({ queryKey: ["unit-upcoming-reservations", editRoom.id] });
+        }
+    };
+
     const createMutation = useMutation({
         mutationFn: (data: any) => api.createUnit(data),
         onSuccess: () => {
             toast({ title: "✅ Unidade Criada", description: `A unidade ${formData.number} foi cadastrada com sucesso!` });
-            queryClient.invalidateQueries({ queryKey: ["units"] });
+            invalidateUnitQueries();
+            onSaved?.();
             onOpenChange(false);
             resetForm();
         },
@@ -528,7 +541,8 @@ export function UnitModal({ open, onOpenChange, editRoom, selectedPropertyId, pr
         mutationFn: (data: any) => api.updateUnit(editRoom!.id, data),
         onSuccess: () => {
             toast({ title: "✅ Unidade Atualizada", description: `A unidade ${formData.number} foi atualizada com sucesso!` });
-            queryClient.invalidateQueries({ queryKey: ["units"] });
+            invalidateUnitQueries();
+            onSaved?.();
             onOpenChange(false);
             resetForm();
         },

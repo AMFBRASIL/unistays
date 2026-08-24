@@ -269,27 +269,13 @@
     background: hsl(var(--muted-foreground) / 0.2);
   }
 
-  /* Scrollbar fina para menu lateral */
-  .sidebar-scrollbar {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(0 0% 100% / 0.35) transparent;
+  /* Menu lateral: scroll funcional, barra oculta */
+  .sidebar-scroll-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
 
-  .sidebar-scrollbar::-webkit-scrollbar {
-    width: 3px;
-    height: 3px;
-  }
-
-  .sidebar-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .sidebar-scrollbar::-webkit-scrollbar-thumb {
-    background: hsl(0 0% 100% / 0.35);
-    border-radius: 999px;
-  }
-
-  .sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: hsl(0 0% 100% / 0.55);
+  .sidebar-scroll-hidden::-webkit-scrollbar {
+    display: none;
   }
 }

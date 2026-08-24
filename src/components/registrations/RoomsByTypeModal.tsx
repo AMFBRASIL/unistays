@@ -120,31 +120,34 @@ export function RoomsByTypeModal({ open, onOpenChange, roomType }: RoomsByTypeMo
 
   useEffect(() => {
     if (open && roomType) {
-      const roomTypeIdNum = typeof roomType.id === "number" ? roomType.id : parseInt(String(roomType.id), 10);
-      if (isNaN(roomTypeIdNum)) {
-        setUnits([]);
-        return;
-      }
-      (async () => {
-        try {
-          setIsLoading(true);
-          const res = await api.getUnits(undefined, undefined, roomTypeIdNum);
-          if (res.success && res.data?.units) {
-            const list = Array.isArray(res.data.units) ? res.data.units : [];
-            setUnits(list.map((u: Record<string, unknown>) => mapApiUnitToDisplay(u)));
-          } else {
-            setUnits([]);
-          }
-        } catch (e) {
-          console.error(e);
-          toast.error("Erro ao carregar quartos");
-          setUnits([]);
-        } finally {
-          setIsLoading(false);
-        }
-      })();
+      void loadUnits();
     }
   }, [open, roomType?.id]);
+
+  const loadUnits = async () => {
+    if (!roomType) return;
+    const roomTypeIdNum = typeof roomType.id === "number" ? roomType.id : parseInt(String(roomType.id), 10);
+    if (isNaN(roomTypeIdNum)) {
+      setUnits([]);
+      return;
+    }
+    try {
+      setIsLoading(true);
+      const res = await api.getUnits(undefined, undefined, roomTypeIdNum);
+      if (res.success && res.data?.units) {
+        const list = Array.isArray(res.data.units) ? res.data.units : [];
+        setUnits(list.map((u: Record<string, unknown>) => mapApiUnitToDisplay(u)));
+      } else {
+        setUnits([]);
+      }
+    } catch (e) {
+      console.error(e);
+      toast.error("Erro ao carregar quartos");
+      setUnits([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   if (!roomType) return null;
 
@@ -439,7 +442,8 @@ export function RoomsByTypeModal({ open, onOpenChange, roomType }: RoomsByTypeMo
     {/* New Unit Modal */}
     <UnitModal 
       open={newUnitModalOpen} 
-      onOpenChange={setNewUnitModalOpen} 
+      onOpenChange={setNewUnitModalOpen}
+      onSaved={loadUnits}
     />
   </>
   );

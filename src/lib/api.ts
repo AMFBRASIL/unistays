@@ -208,25 +208,6 @@ class ApiClient {
     try {
       return await requestToUrl(url);
     } catch (error) {
-      const shouldTryLocalFallback =
-        this.baseURL.includes('localhost:3020') || this.baseURL.includes('127.0.0.1:3020');
-
-      if (shouldTryLocalFallback) {
-        const fallbackUrl = url
-          .replace('localhost:3020', 'localhost:3000')
-          .replace('127.0.0.1:3020', '127.0.0.1:3000');
-
-        try {
-          // Auto fallback para ambiente local quando backend estiver na porta 3000
-          this.baseURL = this.baseURL
-            .replace('localhost:3020', 'localhost:3000')
-            .replace('127.0.0.1:3020', '127.0.0.1:3000');
-          return await requestToUrl(fallbackUrl);
-        } catch (_fallbackError) {
-          // Se fallback também falhar, mantém erro original
-        }
-      }
-
       return {
         success: false,
         error: {
@@ -2151,6 +2132,348 @@ class ApiClient {
     if (params?.all) search.set('all', 'true');
     const q = search.toString();
     return this.request(`/booking-channels${q ? `?${q}` : ''}`);
+  }
+
+  // External integrations (Channel Manager — Channex)
+  async getIntegrationProviders(): Promise<ApiResponse<{ providers: Array<{
+    id: number;
+    code: string;
+    name: string;
+    category: string;
+    description: string | null;
+    capabilities: Record<string, boolean>;
+  }> }>> {
+    return this.request('/integrations/providers');
+  }
+
+  async getIntegrationConnections(params?: { provider?: string }): Promise<ApiResponse<{ connections: Array<{
+    id: number;
+    uuid: string;
+    providerCode: string;
+    providerName: string;
+    name: string;
+    status: string;
+    propertyId: number | null;
+    settings: Record<string, unknown>;
+    lastSyncAt: string | null;
+    lastError: string | null;
+    hasCredentials: boolean;
+  }> }>> {
+    const search = new URLSearchParams();
+    if (params?.provider) search.set('provider', params.provider);
+    const q = search.toString();
+    return this.request(`/integrations/connections${q ? `?${q}` : ''}`);
+  }
+
+  async createIntegrationConnection(data: {
+    providerCode: string;
+    name: string;
+    propertyId?: number | null;
+    accessToken: string;
+    settings?: Record<string, unknown>;
+  }): Promise<ApiResponse<unknown>> {
+    return this.request('/integrations/connections', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateIntegrationConnection(id: number, data: {
+    name?: string;
+    propertyId?: number | null;
+    accessToken?: string;
+    settings?: Record<string, unknown>;
+    status?: string;
+  }): Promise<ApiResponse<unknown>> {
+    return this.request(`/integrations/connections/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteIntegrationConnection(id: number): Promise<ApiResponse<unknown>> {
+    return this.request(`/integrations/connections/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async testIntegrationConnection(id: number): Promise<ApiResponse<{
+    ok: boolean;
+    message: string;
+    propertyCount?: number;
+  }>> {
+    return this.request(`/integrations/connections/${id}/test`, {
+      method: 'POST',
+    });
+  }
+
+  async getIntegrationExternalProperties(connectionId: number): Promise<ApiResponse<{
+    properties: Array<{ externalId: string; title: string; address?: string | null }>;
+  }>> {
+    return this.request(`/integrations/connections/${connectionId}/external-properties`);
+  }
+
+  async getIntegrationExternalListings(connectionId: number): Promise<ApiResponse<{
+    listings: Array<{ listingId: string; channelType: string; title?: string; propertyExternalId?: string }>;
+  }>> {
+    return this.request(`/integrations/connections/${connectionId}/external-listings`);
+  }
+
+  async getIntegrationMappings(connectionId: number, entityType: string = 'unit'): Promise<ApiResponse<{
+    mappings: Array<{
+      id: number;
+      connectionId: number;
+      entityType: string;
+      localId: number;
+      externalId: string;
+      externalLabel: string | null;
+      isActive: boolean;
+    }>;
+  }>> {
+    const q = new URLSearchParams({ entityType });
+    return this.request(`/integrations/connections/${connectionId}/mappings?${q.toString()}`);
+  }
+
+  async upsertIntegrationMapping(connectionId: number, data: {
+    localId: number;
+    externalId: string;
+    externalLabel?: string | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<ApiResponse<unknown>> {
+    return this.request(`/integrations/connections/${connectionId}/mappings`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteIntegrationMapping(connectionId: number, mappingId: number): Promise<ApiResponse<unknown>> {
+    return this.request(`/integrations/connections/${connectionId}/mappings/${mappingId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async deleteIntegrationMappingByExternal(connectionId: number, externalId: string): Promise<ApiResponse<unknown>> {
+    return this.request(
+      `/integrations/connections/${connectionId}/mappings/by-external/${encodeURIComponent(externalId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async registerIntegrationWebhook(connectionId: number): Promise<ApiResponse<{
+    url: string;
+    registered: boolean;
+    message?: string;
+  }>> {
+    return this.request(`/integrations/connections/${connectionId}/register-webhook`, {
+      method: 'POST',
+    });
+  }
+
+  async getIntegrationExternalRoomTypes(connectionId: number, propertyId?: string): Promise<ApiResponse<{
+    roomTypes: Array<{
+      externalId: string;
+      title: string;
+      propertyExternalId: string;
+      countOfRooms: number;
+    }>;
+  }>> {
+    const q = propertyId ? `?propertyId=${encodeURIComponent(propertyId)}` : '';
+    return this.request(`/integrations/connections/${connectionId}/external-room-types${q}`);
+  }
+
+  async pullIntegrationBookings(connectionId: number): Promise<ApiResponse<{
+    processed: number;
+    message: string;
+  }>> {
+    return this.request(`/integrations/connections/${connectionId}/pull-bookings`, {
+      method: 'POST',
+    });
+  }
+
+  async getIntegrationExternalRatePlans(connectionId: number, propertyId?: string): Promise<ApiResponse<{
+    ratePlans: Array<{
+      externalId: string;
+      title: string;
+      propertyExternalId: string;
+      roomTypeExternalId: string;
+      currency?: string;
+    }>;
+  }>> {
+    const q = propertyId ? `?propertyId=${encodeURIComponent(propertyId)}` : '';
+    return this.request(`/integrations/connections/${connectionId}/external-rate-plans${q}`);
+  }
+
+  async provisionIntegrationFromUnistays(
+    connectionId: number,
+    data: { propertyId: number; daysAhead?: number; currency?: string },
+  ): Promise<ApiResponse<{
+    propertyExternalId: string;
+    roomTypesCreated: number;
+    ratePlansCreated: number;
+    unitsMapped: number;
+    availability?: { ok: boolean; message: string };
+    rates?: { ok: boolean; message: string };
+  }>> {
+    return this.request(`/integrations/connections/${connectionId}/provision`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async syncIntegrationAvailability(
+    connectionId: number,
+    data?: { daysAhead?: number },
+  ): Promise<ApiResponse<{ ok: boolean; message: string; roomTypes: number }>> {
+    return this.request(`/integrations/connections/${connectionId}/sync-availability`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  }
+
+  async syncIntegrationRates(
+    connectionId: number,
+    data?: { daysAhead?: number },
+  ): Promise<ApiResponse<{ ok: boolean; message: string; ratePlans: number }>> {
+    return this.request(`/integrations/connections/${connectionId}/sync-rates`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  }
+
+  async doctorIntegration(connectionId: number): Promise<ApiResponse<{
+    ok: boolean;
+    checks: Array<{ name: string; ok: boolean; detail: string }>;
+    poller: {
+      running: boolean;
+      intervalMs: number;
+      lastPollAt: string | null;
+      consecutiveFailures: number;
+    };
+  }>> {
+    return this.request(`/integrations/connections/${connectionId}/doctor`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  async recoverIntegrationBookings(
+    connectionId: number,
+    data: { insertedAtGte: string },
+  ): Promise<ApiResponse<{ created: number; message: string }>> {
+    return this.request(`/integrations/connections/${connectionId}/recover-bookings`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getReservationChannelFlow(reservationId: number): Promise<ApiResponse<{
+    reservation: {
+      id: number;
+      reservationNumber: string;
+      status: string;
+      channel: string | null;
+      externalId: string | null;
+      unitId: number | null;
+      checkIn: string | null;
+      checkOut: string | null;
+      createdAt: string | null;
+      agencyNotes: string | null;
+      internalNotes: string | null;
+      isFromChannex: boolean;
+      overbooking: boolean;
+      otaModification: boolean;
+    };
+    mapping: {
+      connected: boolean;
+      connectionId: number | null;
+      connectionName: string | null;
+      roomTypeExternalId: string | null;
+      channexPropertyId: string | null;
+      mappedUnits: number;
+    } | null;
+    summary: {
+      overall: 'ok' | 'warning' | 'error' | 'idle' | 'inbound' | 'outbound';
+      label: string;
+      hasErrors: boolean;
+      lastSyncAt: string | null;
+      eventsCount: number;
+    };
+    timeline: Array<{
+      id: string;
+      at: string;
+      title: string;
+      description: string;
+      status: 'success' | 'error' | 'skipped' | 'pending' | 'info';
+      direction?: 'inbound' | 'outbound' | 'local';
+      module?: string;
+      action?: string;
+      externalRef?: string | null;
+      details?: Record<string, unknown> | null;
+      errorMessage?: string | null;
+    }>;
+  }>> {
+    return this.request(`/integrations/reservations/${reservationId}/channel-flow`);
+  }
+
+  // Outbound webhooks (Cadastros → Webhooks) — Unistays → sistemas externos
+  async getOutboundWebhooks(): Promise<ApiResponse<{ webhooks: Array<{
+    id: number;
+    uuid: string;
+    name: string;
+    url: string;
+    secret: string;
+    events: string[];
+    isActive: boolean;
+    lastTriggeredAt: string | null;
+    lastStatus: string | null;
+    successCount: number;
+    errorCount: number;
+    successRate: number;
+    totalCalls: number;
+  }> }>> {
+    return this.request('/outbound-webhooks');
+  }
+
+  async createOutboundWebhook(data: {
+    name: string;
+    url: string;
+    events: string[];
+    secret?: string;
+    isActive?: boolean;
+  }): Promise<ApiResponse<unknown>> {
+    return this.request('/outbound-webhooks', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateOutboundWebhook(id: number, data: {
+    name?: string;
+    url?: string;
+    events?: string[];
+    secret?: string;
+    isActive?: boolean;
+  }): Promise<ApiResponse<unknown>> {
+    return this.request(`/outbound-webhooks/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteOutboundWebhook(id: number): Promise<ApiResponse<unknown>> {
+    return this.request(`/outbound-webhooks/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async testOutboundWebhook(id: number): Promise<ApiResponse<{
+    ok: boolean;
+    status?: number;
+    message: string;
+  }>> {
+    return this.request(`/outbound-webhooks/${id}/test`, {
+      method: 'POST',
+    });
   }
 
   async getBookingChannelCatalog(): Promise<ApiResponse<{ catalog: unknown[] }>> {

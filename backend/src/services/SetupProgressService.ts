@@ -171,7 +171,7 @@ export class SetupProgressService {
     items['int-3'] = (await scalar(`SELECT COUNT(*) AS c FROM equipments WHERE status = 'active'`)) > 0;
 
     items['int-4'] = await safeExists(
-      `SELECT 1 AS c FROM workflow_webhooks WHERE is_active = 1 LIMIT 1`
+      `SELECT 1 AS c FROM outbound_webhooks WHERE is_active = 1 LIMIT 1`
     );
 
     items['user-1'] =

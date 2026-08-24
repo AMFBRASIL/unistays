@@ -1204,6 +1204,7 @@ export default function RoomMap() {
           editRoom={editingRoom}
           selectedPropertyId={selectedPropertyForUnit}
           properties={properties}
+          onSaved={refreshData}
         />
 
         <NewTaskModal

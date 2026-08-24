@@ -1,17 +1,31 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { 
-  Tags, 
-  Plus, 
-  Search, 
-  Filter,
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Tags,
+  Plus,
+  Search,
   Percent,
   Calendar,
   Clock,
@@ -20,155 +34,194 @@ import {
   TrendingUp,
   Edit,
   Trash2,
-  Copy,
-  MoreVertical,
   Package,
-  Utensils,
-  Car,
-  Sparkles,
-  Heart,
-  PartyPopper,
-  Briefcase
+  Briefcase,
+  Loader2,
+  Building2,
+  Tag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { NewRatePlanModal } from "@/components/rateplans/NewRatePlanModal";
+import { RatePlanModal } from "@/components/registrations/RatePlanModal";
+import { api } from "@/lib/api";
+import { toast } from "sonner";
 
-interface RatePlan {
-  id: string;
+interface ApiRatePlan {
+  id: number;
+  uuid?: string;
+  propertyId: number;
   name: string;
-  description: string;
-  type: "package" | "promotion" | "corporate" | "seasonal";
-  discount: number;
-  validFrom: string;
-  validTo: string;
-  minNights: number;
-  maxNights?: number;
-  inclusions: string[];
-  roomTypes: string[];
-  active: boolean;
-  bookings: number;
-  revenue: number;
+  code: string;
+  description?: string | null;
+  type: string;
+  status: string;
+  currency?: string;
+  baseRate?: number;
+  discountPercentage?: number | null;
+  minStay?: number | null;
+  maxStay?: number | null;
+  validFrom?: string | null;
+  validTo?: string | null;
+  inclusions?: string[] | null;
+  propertyTypes?: string[] | null;
+  stayTypes?: string[] | null;
 }
 
-const ratePlans: RatePlan[] = [
-  {
-    id: "1",
-    name: "Pacote Romântico",
-    description: "Experiência especial para casais com jantar e spa",
-    type: "package",
-    discount: 15,
-    validFrom: "2024-01-01",
-    validTo: "2024-12-31",
-    minNights: 2,
-    inclusions: ["Café da manhã", "Jantar romântico", "Spa para casal", "Decoração especial"],
-    roomTypes: ["Suite Master", "Suite Presidencial"],
-    active: true,
-    bookings: 45,
-    revenue: 89500
-  },
-  {
-    id: "2",
-    name: "Early Bird - Verão",
-    description: "Reserve com antecedência e economize",
-    type: "promotion",
-    discount: 20,
-    validFrom: "2024-12-01",
-    validTo: "2025-02-28",
-    minNights: 3,
-    inclusions: ["Café da manhã", "Late checkout"],
-    roomTypes: ["Standard", "Superior", "Luxo"],
-    active: true,
-    bookings: 128,
-    revenue: 245000
-  },
-  {
-    id: "3",
-    name: "Corporativo Premium",
-    description: "Tarifas especiais para empresas conveniadas",
-    type: "corporate",
-    discount: 25,
-    validFrom: "2024-01-01",
-    validTo: "2024-12-31",
-    minNights: 1,
-    inclusions: ["Café da manhã", "Wi-Fi premium", "Estacionamento"],
-    roomTypes: ["Standard", "Superior", "Executivo"],
-    active: true,
-    bookings: 320,
-    revenue: 456000
-  },
-  {
-    id: "4",
-    name: "Réveillon 2025",
-    description: "Pacote especial de fim de ano com festa",
-    type: "seasonal",
-    discount: 0,
-    validFrom: "2024-12-29",
-    validTo: "2025-01-02",
-    minNights: 4,
-    maxNights: 5,
-    inclusions: ["Pensão completa", "Festa de Réveillon", "Open bar", "Shows ao vivo"],
-    roomTypes: ["Suite Master", "Suite Presidencial", "Luxo"],
-    active: true,
-    bookings: 35,
-    revenue: 175000
-  },
-  {
-    id: "5",
-    name: "Família Feliz",
-    description: "Pacote especial para famílias com crianças",
-    type: "package",
-    discount: 10,
-    validFrom: "2024-01-01",
-    validTo: "2024-12-31",
-    minNights: 2,
-    inclusions: ["Café da manhã", "Kids club", "Passeios infantis"],
-    roomTypes: ["Familiar", "Suite Familiar"],
-    active: false,
-    bookings: 89,
-    revenue: 134000
-  },
-];
-
-const typeConfig = {
+const typeConfig: Record<
+  string,
+  { icon: React.ElementType; color: string; label: string }
+> = {
+  rack: { icon: Tag, color: "from-blue-500 to-cyan-500", label: "Padrão" },
   package: { icon: Gift, color: "from-purple-500 to-pink-500", label: "Pacote" },
-  promotion: { icon: Percent, color: "from-emerald-500 to-green-500", label: "Promoção" },
+  promotional: { icon: Percent, color: "from-emerald-500 to-green-500", label: "Promoção" },
   corporate: { icon: Briefcase, color: "from-blue-500 to-cyan-500", label: "Corporativo" },
-  seasonal: { icon: Calendar, color: "from-amber-500 to-orange-500", label: "Temporada" },
+  group: { icon: Building2, color: "from-cyan-500 to-teal-500", label: "Grupo" },
+  long_stay: { icon: Calendar, color: "from-amber-500 to-orange-500", label: "Long Stay" },
 };
 
-const inclusionIcons: Record<string, React.ElementType> = {
-  "Café da manhã": Utensils,
-  "Jantar romântico": Heart,
-  "Spa para casal": Sparkles,
-  "Decoração especial": Heart,
-  "Late checkout": Clock,
-  "Wi-Fi premium": Star,
-  "Estacionamento": Car,
-  "Pensão completa": Utensils,
-  "Festa de Réveillon": PartyPopper,
-  "Open bar": Star,
-  "Shows ao vivo": Star,
-  "Kids club": Star,
-  "Passeios infantis": Star,
+const inclusionLabels: Record<string, string> = {
+  breakfast: "Café da manhã",
+  parking: "Estacionamento",
+  pool: "Piscina",
+  gym: "Academia",
+  meals: "Refeições",
 };
+
+function formatMoney(value: number) {
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return "—";
+  const d = new Date(value.length === 10 ? `${value}T12:00:00` : value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("pt-BR");
+}
 
 export default function RatePlans() {
+  const [plans, setPlans] = useState<ApiRatePlan[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [plans, setPlans] = useState(ratePlans);
-  const [newPlanModalOpen, setNewPlanModalOpen] = useState(false);
+  const [filterType, setFilterType] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [planToEdit, setPlanToEdit] = useState<ApiRatePlan | null>(null);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [togglingId, setTogglingId] = useState<number | null>(null);
 
-  const activePlans = plans.filter(p => p.active).length;
-  const totalRevenue = plans.reduce((acc, p) => acc + p.revenue, 0);
-  const totalBookings = plans.reduce((acc, p) => acc + p.bookings, 0);
+  const fetchPlans = useCallback(async () => {
+    setLoading(true);
+    try {
+      const type = filterType === "all" ? undefined : filterType;
+      const status = filterStatus === "all" ? undefined : filterStatus;
+      const res = await api.getRatePlans(
+        searchQuery.trim() || undefined,
+        undefined,
+        type,
+        status,
+      );
+      if (res.success && res.data?.ratePlans) {
+        setPlans((res.data.ratePlans as ApiRatePlan[]) || []);
+      } else {
+        setPlans([]);
+        if (!res.success) {
+          toast.error(res.error?.message || "Falha ao carregar planos tarifários");
+        }
+      }
+    } catch {
+      setPlans([]);
+      toast.error("Falha ao carregar planos tarifários");
+    } finally {
+      setLoading(false);
+    }
+  }, [filterType, filterStatus, searchQuery]);
 
-  const togglePlanStatus = (id: string) => {
-    setPlans(prev => prev.map(p => p.id === id ? { ...p, active: !p.active } : p));
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      void fetchPlans();
+    }, searchQuery ? 300 : 0);
+    return () => window.clearTimeout(t);
+  }, [fetchPlans, searchQuery]);
+
+  const stats = useMemo(() => {
+    const active = plans.filter((p) => p.status === "active").length;
+    const totalBase = plans.reduce((acc, p) => acc + (Number(p.baseRate) || 0), 0);
+    return {
+      total: plans.length,
+      active,
+      avgBase: plans.length ? totalBase / plans.length : 0,
+      withDiscount: plans.filter((p) => Number(p.discountPercentage) > 0).length,
+    };
+  }, [plans]);
+
+  const openCreate = () => {
+    setPlanToEdit(null);
+    setModalOpen(true);
+  };
+
+  const openEdit = (plan: ApiRatePlan) => {
+    setPlanToEdit(plan);
+    setModalOpen(true);
+  };
+
+  const handleModalOpenChange = (open: boolean) => {
+    setModalOpen(open);
+    if (!open) setPlanToEdit(null);
+  };
+
+  const togglePlanStatus = async (plan: ApiRatePlan) => {
+    const next = plan.status === "active" ? "inactive" : "active";
+    setTogglingId(plan.id);
+    // optimistic
+    setPlans((prev) =>
+      prev.map((p) => (p.id === plan.id ? { ...p, status: next } : p)),
+    );
+    try {
+      const res = await api.updateRatePlan(plan.id, { status: next });
+      if (!res.success) {
+        setPlans((prev) =>
+          prev.map((p) => (p.id === plan.id ? { ...p, status: plan.status } : p)),
+        );
+        toast.error(res.error?.message || "Falha ao atualizar status");
+        return;
+      }
+      toast.success(next === "active" ? "Plano ativado" : "Plano desativado");
+    } catch {
+      setPlans((prev) =>
+        prev.map((p) => (p.id === plan.id ? { ...p, status: plan.status } : p)),
+      );
+      toast.error("Falha ao atualizar status");
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (deleteId == null) return;
+    setDeleting(true);
+    try {
+      const res = await api.deleteRatePlan(deleteId);
+      if (res.success) {
+        toast.success("Plano tarifário excluído");
+        setDeleteId(null);
+        await fetchPlans();
+      } else {
+        toast.error(res.error?.message || "Erro ao excluir");
+      }
+    } catch {
+      toast.error("Erro ao excluir");
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        {/* Header */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center shadow-lg shadow-purple-500/25">
@@ -176,32 +229,27 @@ export default function RatePlans() {
             </div>
             <div>
               <h1 className="text-2xl font-bold">Planos de Tarifas</h1>
-              <p className="text-muted-foreground">Pacotes promocionais e planos de tarifas</p>
+              <p className="text-muted-foreground">
+                Tarifas cadastradas no banco (rate_plans)
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <Button variant="outline" className="gap-2">
-              <Filter className="w-4 h-4" />
-              Filtrar
-            </Button>
-            <Button 
-              className="gap-2 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700"
-              onClick={() => setNewPlanModalOpen(true)}
-            >
-              <Plus className="w-4 h-4" />
-              Novo Plano
-            </Button>
-          </div>
+          <Button
+            className="gap-2 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700"
+            onClick={openCreate}
+          >
+            <Plus className="w-4 h-4" />
+            Novo Plano
+          </Button>
         </div>
 
-        {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <Card className="bg-gradient-to-br from-purple-500/10 to-pink-500/5 border-purple-500/20">
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">Planos Ativos</p>
-                  <p className="text-2xl font-bold text-purple-500">{activePlans}</p>
+                  <p className="text-sm text-muted-foreground">Planos ativos</p>
+                  <p className="text-2xl font-bold text-purple-500">{stats.active}</p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center">
                   <Tags className="w-6 h-6 text-purple-500" />
@@ -214,8 +262,8 @@ export default function RatePlans() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">Receita Gerada</p>
-                  <p className="text-2xl font-bold text-emerald-500">R$ {(totalRevenue / 1000).toFixed(0)}k</p>
+                  <p className="text-sm text-muted-foreground">Total cadastrados</p>
+                  <p className="text-2xl font-bold text-emerald-500">{stats.total}</p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-emerald-500/20 flex items-center justify-center">
                   <TrendingUp className="w-6 h-6 text-emerald-500" />
@@ -228,11 +276,11 @@ export default function RatePlans() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">Reservas</p>
-                  <p className="text-2xl font-bold text-blue-500">{totalBookings}</p>
+                  <p className="text-sm text-muted-foreground">Com desconto</p>
+                  <p className="text-2xl font-bold text-blue-500">{stats.withDiscount}</p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center">
-                  <Calendar className="w-6 h-6 text-blue-500" />
+                  <Percent className="w-6 h-6 text-blue-500" />
                 </div>
               </div>
             </CardContent>
@@ -242,8 +290,10 @@ export default function RatePlans() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">Ticket Médio</p>
-                  <p className="text-2xl font-bold text-amber-500">R$ {(totalRevenue / totalBookings).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</p>
+                  <p className="text-sm text-muted-foreground">Tarifa base média</p>
+                  <p className="text-2xl font-bold text-amber-500">
+                    {stats.avgBase > 0 ? formatMoney(stats.avgBase) : "—"}
+                  </p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-amber-500/20 flex items-center justify-center">
                   <Star className="w-6 h-6 text-amber-500" />
@@ -253,106 +303,214 @@ export default function RatePlans() {
           </Card>
         </div>
 
-        {/* Search */}
-        <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
-              placeholder="Buscar planos de tarifas..."
+              placeholder="Buscar por nome, código ou descrição..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10"
             />
           </div>
+          <Select value={filterType} onValueChange={setFilterType}>
+            <SelectTrigger className="w-full sm:w-[160px]">
+              <SelectValue placeholder="Tipo" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos os tipos</SelectItem>
+              <SelectItem value="rack">Padrão</SelectItem>
+              <SelectItem value="promotional">Promocional</SelectItem>
+              <SelectItem value="corporate">Corporativo</SelectItem>
+              <SelectItem value="package">Pacote</SelectItem>
+              <SelectItem value="long_stay">Long Stay</SelectItem>
+              <SelectItem value="group">Grupo</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <SelectTrigger className="w-full sm:w-[140px]">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos</SelectItem>
+              <SelectItem value="active">Ativos</SelectItem>
+              <SelectItem value="inactive">Inativos</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
-        {/* Plans Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {plans.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map((plan) => {
-            const config = typeConfig[plan.type];
-            return (
-              <Card key={plan.id} className={cn("transition-all", !plan.active && "opacity-60")}>
-                <CardContent className="p-6">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className={cn("w-12 h-12 rounded-xl bg-gradient-to-br flex items-center justify-center", config.color)}>
-                        <config.icon className="w-6 h-6 text-white" />
-                      </div>
-                      <div>
-                        <h3 className="font-semibold text-lg">{plan.name}</h3>
-                        <Badge variant="outline" className="mt-1">{config.label}</Badge>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Switch checked={plan.active} onCheckedChange={() => togglePlanStatus(plan.id)} />
-                    </div>
-                  </div>
+        {loading ? (
+          <div className="py-20 flex justify-center items-center gap-2 text-muted-foreground">
+            <Loader2 className="w-6 h-6 animate-spin" />
+            Carregando planos...
+          </div>
+        ) : plans.length === 0 ? (
+          <Card>
+            <CardContent className="p-12 text-center space-y-3">
+              <Tags className="w-12 h-12 mx-auto text-muted-foreground/40" />
+              <h3 className="text-lg font-medium">Nenhum plano tarifário</h3>
+              <p className="text-sm text-muted-foreground">
+                Cadastre o primeiro plano para usá-lo em reservas e canais.
+              </p>
+              <Button onClick={openCreate} className="gap-2">
+                <Plus className="w-4 h-4" />
+                Novo Plano
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {plans.map((plan) => {
+              const config = typeConfig[plan.type] || typeConfig.rack;
+              const Icon = config.icon;
+              const active = plan.status === "active";
+              const inclusions = (plan.inclusions || []).map(
+                (id) => inclusionLabels[id] || id,
+              );
 
-                  <p className="text-sm text-muted-foreground mb-4">{plan.description}</p>
+              return (
+                <Card
+                  key={plan.id}
+                  className={cn("transition-all", !active && "opacity-60")}
+                >
+                  <CardContent className="p-6">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className={cn(
+                            "w-12 h-12 rounded-xl bg-gradient-to-br flex items-center justify-center shrink-0",
+                            config.color,
+                          )}
+                        >
+                          <Icon className="w-6 h-6 text-white" />
+                        </div>
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-lg truncate">{plan.name}</h3>
+                          <div className="flex flex-wrap gap-1.5 mt-1">
+                            <Badge variant="outline">{config.label}</Badge>
+                            <Badge variant="secondary" className="font-mono text-xs">
+                              {plan.code}
+                            </Badge>
+                          </div>
+                        </div>
+                      </div>
+                      <Switch
+                        checked={active}
+                        disabled={togglingId === plan.id}
+                        onCheckedChange={() => void togglePlanStatus(plan)}
+                      />
+                    </div>
 
-                  <div className="flex flex-wrap gap-2 mb-4">
-                    {plan.discount > 0 && (
-                      <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
-                        <Percent className="w-3 h-3 mr-1" />
-                        {plan.discount}% desconto
-                      </Badge>
+                    {plan.description && (
+                      <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+                        {plan.description}
+                      </p>
                     )}
-                    <Badge variant="outline">
-                      <Clock className="w-3 h-3 mr-1" />
-                      Mín. {plan.minNights} noites
-                    </Badge>
-                    <Badge variant="outline">
-                      <Calendar className="w-3 h-3 mr-1" />
-                      Até {new Date(plan.validTo).toLocaleDateString('pt-BR')}
-                    </Badge>
-                  </div>
 
-                  <div className="bg-muted/50 rounded-lg p-3 mb-4">
-                    <p className="text-xs text-muted-foreground mb-2">Inclui:</p>
-                    <div className="flex flex-wrap gap-2">
-                      {plan.inclusions.map((inclusion, idx) => {
-                        const Icon = inclusionIcons[inclusion] || Package;
-                        return (
-                          <Badge key={idx} variant="secondary" className="gap-1">
-                            <Icon className="w-3 h-3" />
-                            {inclusion}
-                          </Badge>
-                        );
-                      })}
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      {Number(plan.discountPercentage) > 0 && (
+                        <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20">
+                          <Percent className="w-3 h-3 mr-1" />
+                          {Number(plan.discountPercentage)}% desconto
+                        </Badge>
+                      )}
+                      {plan.minStay != null && (
+                        <Badge variant="outline">
+                          <Clock className="w-3 h-3 mr-1" />
+                          Mín. {plan.minStay} noite{plan.minStay > 1 ? "s" : ""}
+                        </Badge>
+                      )}
+                      {plan.validTo && (
+                        <Badge variant="outline">
+                          <Calendar className="w-3 h-3 mr-1" />
+                          Até {formatDate(plan.validTo)}
+                        </Badge>
+                      )}
+                      {Number(plan.baseRate) > 0 && (
+                        <Badge variant="outline">{formatMoney(Number(plan.baseRate))}</Badge>
+                      )}
                     </div>
-                  </div>
 
-                  <div className="grid grid-cols-2 gap-4 mb-4">
-                    <div className="text-center p-2 rounded-lg bg-card border border-border">
-                      <p className="text-2xl font-bold text-primary">{plan.bookings}</p>
-                      <p className="text-xs text-muted-foreground">Reservas</p>
-                    </div>
-                    <div className="text-center p-2 rounded-lg bg-card border border-border">
-                      <p className="text-2xl font-bold text-emerald-500">R$ {(plan.revenue / 1000).toFixed(0)}k</p>
-                      <p className="text-xs text-muted-foreground">Receita</p>
-                    </div>
-                  </div>
+                    {inclusions.length > 0 && (
+                      <div className="bg-muted/50 rounded-lg p-3 mb-4">
+                        <p className="text-xs text-muted-foreground mb-2">Inclui:</p>
+                        <div className="flex flex-wrap gap-2">
+                          {inclusions.map((label) => (
+                            <Badge key={label} variant="secondary" className="gap-1">
+                              <Package className="w-3 h-3" />
+                              {label}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
-                  <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" className="flex-1 gap-1">
-                      <Edit className="w-4 h-4" />
-                      Editar
-                    </Button>
-                    <Button variant="outline" size="sm" className="gap-1">
-                      <Copy className="w-4 h-4" />
-                    </Button>
-                    <Button variant="outline" size="sm" className="gap-1 text-red-500 hover:text-red-600">
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 gap-1"
+                        onClick={() => openEdit(plan)}
+                      >
+                        <Edit className="w-4 h-4" />
+                        Editar
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1 text-red-500 hover:text-red-600"
+                        onClick={() => setDeleteId(plan.id)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      <NewRatePlanModal open={newPlanModalOpen} onOpenChange={setNewPlanModalOpen} />
+      <RatePlanModal
+        open={modalOpen}
+        onOpenChange={handleModalOpenChange}
+        modeWhenOpen={planToEdit ? "edit" : "create"}
+        initialData={planToEdit || undefined}
+        onSuccess={() => {
+          void fetchPlans();
+        }}
+      />
+
+      <AlertDialog
+        open={deleteId != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteId(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir plano tarifário?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O plano será removido (soft delete). Esta ação pode ser revertida no banco se
+              necessário.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleting}
+              className="bg-rose-600 hover:bg-rose-700"
+              onClick={(e) => {
+                e.preventDefault();
+                void handleDeleteConfirm();
+              }}
+            >
+              {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Excluir"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </DashboardLayout>
   );
 }

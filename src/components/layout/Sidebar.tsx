@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useLocation, Link } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
@@ -8,10 +8,11 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
 // Icons used in fixed UI elements
-const { Layers, ChevronLeft, ChevronRight, Bell, HelpCircle, LogOut } = LucideIcons;
+const { Layers, ChevronLeft, ChevronRight, ChevronDown, Bell, HelpCircle, LogOut } = LucideIcons;
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(false);
   const location = useLocation();
   const navRef = useRef<HTMLElement>(null);
   const { user, logout } = useAuth();
@@ -83,6 +84,17 @@ export function Sidebar() {
 
   }, [user, menuGroups]);
 
+  const updateScrollIndicator = useCallback(() => {
+    const navElement = navRef.current;
+    if (!navElement) return;
+    const { scrollTop, scrollHeight, clientHeight } = navElement;
+    setCanScrollDown(scrollTop + clientHeight < scrollHeight - 8);
+  }, []);
+
+  const scrollMenuDown = () => {
+    navRef.current?.scrollBy({ top: 220, behavior: "smooth" });
+  };
+
   // Restaurar posição do scroll ao montar
   useEffect(() => {
     if (navRef.current) {
@@ -106,17 +118,23 @@ export function Sidebar() {
       // Salvar scroll ao fazer scroll
       const handleScroll = () => {
         sessionStorage.setItem(SCROLL_STORAGE_KEY, navElement.scrollTop.toString());
+        updateScrollIndicator();
       };
 
       navElement.addEventListener('scroll', handleScroll);
       window.addEventListener('beforeunload', handleBeforeUnload);
+      updateScrollIndicator();
+
+      const resizeObserver = new ResizeObserver(updateScrollIndicator);
+      resizeObserver.observe(navElement);
 
       return () => {
         navElement.removeEventListener('scroll', handleScroll);
         window.removeEventListener('beforeunload', handleBeforeUnload);
+        resizeObserver.disconnect();
       };
     }
-  }, []);
+  }, [updateScrollIndicator]);
 
   // Restaurar scroll após mudança de rota (com pequeno delay para garantir renderização)
   useEffect(() => {
@@ -130,7 +148,12 @@ export function Sidebar() {
     }, 50);
 
     return () => clearTimeout(timer);
-  }, [location.pathname]);
+  }, [location.pathname, updateScrollIndicator]);
+
+  useEffect(() => {
+    const timer = setTimeout(updateScrollIndicator, 100);
+    return () => clearTimeout(timer);
+  }, [navigation, collapsed, updateScrollIndicator]);
 
   useEffect(() => {
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
@@ -178,8 +201,9 @@ export function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav ref={navRef} className="flex-1 overflow-y-auto sidebar-scrollbar py-4 px-3">
-        {navigation.map((section) => (
+      <div className="relative flex-1 min-h-0">
+        <nav ref={navRef} className="h-full overflow-y-auto sidebar-scroll-hidden py-4 px-3 pb-16">
+          {navigation.map((section) => (
           <div key={section.title} className="mb-6">
             <h3
               className={cn(
@@ -235,7 +259,29 @@ export function Sidebar() {
             </ul>
           </div>
         ))}
-      </nav>
+        </nav>
+
+        {canScrollDown && (
+          <>
+            <div
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-[#0f234d] via-[#0f234d]/90 to-transparent"
+              aria-hidden
+            />
+            <button
+              type="button"
+              onClick={scrollMenuDown}
+              className={cn(
+                "absolute bottom-3 left-1/2 z-10 -translate-x-1/2 flex items-center gap-2 rounded-xl border border-white/15 bg-[#0a1a3a]/95 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-white/90 shadow-lg backdrop-blur-sm transition-colors hover:bg-white/10 hover:text-white",
+                collapsed && "px-2"
+              )}
+              aria-label="Ver mais itens do menu"
+            >
+              {!collapsed && <span>Mais módulos</span>}
+              <ChevronDown className="h-4 w-4 shrink-0 text-blue-300" />
+            </button>
+          </>
+        )}
+      </div>
 
       {/* Footer */}
       <div className="p-3 border-t border-white/10">

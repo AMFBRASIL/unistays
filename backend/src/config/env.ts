@@ -27,6 +27,12 @@ export const env = {
   /** URL pública do frontend (ex.: https://app.seudominio.com) — usada no link do e-mail de redefinição de senha do hóspede */
   FRONTEND_PUBLIC_URL: (process.env.FRONTEND_PUBLIC_URL || process.env.VITE_APP_URL || 'http://localhost:5173').replace(/\/$/, ''),
 
+  /**
+   * URL pública da API (ex.: https://unistays.com.br ou http://localhost:3020).
+   * Usada para registrar webhooks Channex → Unistays. Em local, use ngrok/túnel.
+   */
+  API_PUBLIC_URL: (process.env.API_PUBLIC_URL || `http://localhost:${process.env.PORT || '3020'}`).replace(/\/$/, ''),
+
   // Email
   SMTP_HOST: process.env.SMTP_HOST || '',
   SMTP_PORT: parseInt(process.env.SMTP_PORT || '587'),

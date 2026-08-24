@@ -27,12 +27,15 @@ dist-ssr
 .env
 .env.*
 !.env.example
+!.env.development
 backend/.env
 backend/.env.*
 !backend/.env.example
 backend/env.example
 
 # Banco: dumps, backups, SQL e migrations (manter só no VPS/local)
+BancoUnistays/
+exemplo.xml
 backend/database/
 backend/src/database/
 backend/sql/

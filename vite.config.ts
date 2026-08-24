@@ -9,6 +9,13 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    proxy: {
+      // Local dev: /api/v1 (mesmo path da produção) → backend Express :3020
+      "/api": {
+        target: "http://127.0.0.1:3020",
+        changeOrigin: true,
+      },
+    },
   },
   plugins: [
     react(),

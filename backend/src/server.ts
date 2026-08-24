@@ -97,6 +97,12 @@ const ensureDataSourceInitialized = async () => {
   if (!workflowListenersRegistered) {
     const { registerWorkflowListeners } = await import('@/events/workflowListeners');
     registerWorkflowListeners();
+    const { registerIntegrationListeners } = await import('@/events/integrationListeners');
+    registerIntegrationListeners();
+    const { registerOutboundWebhookListeners } = await import('@/events/outboundWebhookListeners');
+    registerOutboundWebhookListeners();
+    const { ensureOutboundWebhookSchema } = await import('@/services/webhooks/ensureOutboundWebhookSchema');
+    await ensureOutboundWebhookSchema();
     workflowListenersRegistered = true;
   }
 };
@@ -122,6 +128,12 @@ const corsOptions: cors.CorsOptions = {
     // Allow server-to-server tools/curl requests without Origin header
     if (!origin || allowedOrigins.has(origin)) {
       return callback(null, true);
+    }
+    // Dev: Vite pode usar 8080, 8081, 8082… quando a API é chamada direto na :3020
+    if (env.NODE_ENV !== 'production') {
+      if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
     }
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
@@ -236,9 +248,13 @@ app.use(`/api/${env.API_VERSION}/email-segments`, emailSegmentRoutes);
 app.use(`/api/${env.API_VERSION}/guests`, guestAuthRoutes);
 app.use(`/api/${env.API_VERSION}/booking`, bookingRoutes);
 import bookingChannelRoutes from '@/routes/bookingChannel.routes';
+import integrationRoutes from '@/routes/integration.routes';
+import outboundWebhookRoutes from '@/routes/outboundWebhook.routes';
 
 app.use(`/api/${env.API_VERSION}/payment-methods`, paymentMethodRoutes);
 app.use(`/api/${env.API_VERSION}/booking-channels`, bookingChannelRoutes);
+app.use(`/api/${env.API_VERSION}/integrations`, integrationRoutes);
+app.use(`/api/${env.API_VERSION}/outbound-webhooks`, outboundWebhookRoutes);
 app.use(`/api/${env.API_VERSION}/unit-rates`, unitRateRoutes);
 app.use(`/api/${env.API_VERSION}/housekeeping`, housekeepingRoutes);
 app.use(`/api/${env.API_VERSION}/financial/transactions`, transactionRoutes);
@@ -262,6 +278,13 @@ app.use(errorHandler);
 const startServer = async () => {
   try {
     await ensureDataSourceInitialized();
+
+    try {
+      const { startChannexFeedPoller } = await import('@/services/integrations/ChannexFeedPoller');
+      startChannexFeedPoller();
+    } catch (err) {
+      logger.warn('Channex feed poller not started', err);
+    }
 
     app.listen(env.PORT, () => {
       logger.info(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);

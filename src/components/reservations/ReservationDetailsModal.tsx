@@ -39,6 +39,7 @@ import {
     Percent,
     Ban,
     Send,
+    Radio,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -47,6 +48,7 @@ import { api } from "@/lib/api";
 import { ReservationSummaryModal } from "./ReservationSummaryModal";
 import { SendReservationChannelsModal } from "./SendReservationChannelsModal";
 import { CompletePaymentModal } from "./CompletePaymentModal";
+import { ChannelManagerFlowModal } from "./ChannelManagerFlowModal";
 import { toast } from "sonner";
 
 interface ReservationDetailsModalProps {
@@ -68,6 +70,7 @@ export function ReservationDetailsModal({ reservationId, open, onOpenChange, onE
     const [sendChannelsModalOpen, setSendChannelsModalOpen] = useState(false);
     const [completePaymentModalOpen, setCompletePaymentModalOpen] = useState(false);
     const [isPrintingContract, setIsPrintingContract] = useState(false);
+    const [channelFlowOpen, setChannelFlowOpen] = useState(false);
 
     useEffect(() => {
         if (open && reservationId) {
@@ -754,6 +757,14 @@ export function ReservationDetailsModal({ reservationId, open, onOpenChange, onE
                                 <Send className="w-4 h-4" />
                                 Enviar reserva
                             </Button>
+                            <Button
+                                variant="outline"
+                                onClick={() => setChannelFlowOpen(true)}
+                                className="gap-2 border-teal-500/30 text-teal-700 hover:bg-teal-500/10 hover:text-teal-800"
+                            >
+                                <Radio className="w-4 h-4" />
+                                Fluxo Channel Manager
+                            </Button>
                             <Button variant="outline" onClick={() => { onOpenChange(false); onEdit(); }}>
                                 Editar Reserva
                             </Button>
@@ -845,6 +856,13 @@ export function ReservationDetailsModal({ reservationId, open, onOpenChange, onE
                     }}
                 />
             )}
+
+            <ChannelManagerFlowModal
+                open={channelFlowOpen}
+                onOpenChange={setChannelFlowOpen}
+                reservationId={reservation ? Number(reservation.id) : null}
+                reservationNumber={reservation?.reservationNumber}
+            />
 
             {/* Modal do Voucher para impressão */}
             {reservation && (
