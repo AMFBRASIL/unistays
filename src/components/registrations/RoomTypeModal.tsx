@@ -77,6 +77,8 @@ const pricingModels = [
 interface RoomTypeModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Se informado, abre em modo edição e carrega o tipo pelo ID */
+  editId?: number | null;
 }
 
 interface AmenityOption {
@@ -120,70 +122,129 @@ const propertyTypes = [
 ];
 const PLACEHOLDER_IMAGE = "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=400";
 
-export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
+const emptyForm = (propertyId = "") => ({
+  propertyId,
+  name: "",
+  code: "",
+  description: "",
+  propertyType: "",
+  pricingModel: "" as "per_person" | "per_unit" | "",
+  maxGuests: "2",
+  maxAdults: "2",
+  maxChildren: "1",
+  basePrice: "",
+  pricePerAdult: "",
+  pricePerChild: "",
+  extraPersonFee: "",
+  size: "",
+  selectedAmenities: [] as number[],
+  isActive: true,
+});
+
+export function RoomTypeModal({ open, onOpenChange, editId = null }: RoomTypeModalProps) {
   const queryClient = useQueryClient();
+  const isEditMode = !!editId;
   const [step, setStep] = useState(1);
   const [properties, setProperties] = useState<{ id: number; name?: string }[]>([]);
   const [amenities, setAmenities] = useState<AmenityOption[]>([]);
   const [amenitiesLoading, setAmenitiesLoading] = useState(false);
+  const [isLoadingEdit, setIsLoadingEdit] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [formData, setFormData] = useState({
-    propertyId: "" as string,
-    name: "",
-    code: "",
-    description: "",
-    propertyType: "",
-    pricingModel: "" as "per_person" | "per_unit" | "",
-    maxGuests: "2",
-    maxAdults: "2",
-    maxChildren: "1",
-    basePrice: "",
-    pricePerAdult: "",
-    pricePerChild: "",
-    extraPersonFee: "",
-    size: "",
-    selectedAmenities: [] as number[],
-    isActive: true,
-  });
+  const [formData, setFormData] = useState(emptyForm());
 
   useEffect(() => {
     if (!open) return;
 
-    api.getProperties().then((res) => {
-      if (res.success && res.data?.properties) {
-        const list = (res.data.properties as { id: number; name?: string }[]) ?? [];
-        setProperties(list);
-        if (list.length > 0) {
-          setFormData((prev) => ({
-            ...prev,
-            propertyId: prev.propertyId || String(list[0].id),
-          }));
-        }
+    setStep(1);
+
+    const loadBase = async () => {
+      const [propsRes, amenitiesRes] = await Promise.all([
+        api.getProperties(),
+        api.getAmenities(undefined, undefined, "active"),
+      ]);
+
+      let propsList: { id: number; name?: string }[] = [];
+      if (propsRes.success && propsRes.data?.properties) {
+        propsList = (propsRes.data.properties as { id: number; name?: string }[]) ?? [];
+        setProperties(propsList);
       }
-    });
+
+      if (amenitiesRes.success && amenitiesRes.data?.amenities) {
+        const list = (amenitiesRes.data.amenities as AmenityOption[]) ?? [];
+        setAmenities(list.filter((a) => a?.id != null));
+      } else {
+        setAmenities([]);
+      }
+
+      if (editId) {
+        setIsLoadingEdit(true);
+        try {
+          const res = await api.getRoomTypeById(editId);
+          const rt = (res.data as { roomType?: Record<string, unknown> } | undefined)?.roomType;
+          if (!res.success || !rt) {
+            toast({
+              title: "Erro",
+              description: "Não foi possível carregar o tipo de quarto.",
+              variant: "destructive",
+            });
+            onOpenChange(false);
+            return;
+          }
+
+          const dbPropertyType = String(rt.propertyType ?? "");
+          const uiPropertyType = dbPropertyType === "apart-hotel" ? "apart" : dbPropertyType;
+          const amenityIds = Array.isArray(rt.amenities)
+            ? (rt.amenities as Array<{ id?: number }>)
+                .map((a) => Number(a.id))
+                .filter((id) => !Number.isNaN(id))
+            : [];
+
+          setFormData({
+            propertyId: String(rt.propertyId ?? propsList[0]?.id ?? ""),
+            name: String(rt.name ?? ""),
+            code: String(rt.code ?? ""),
+            description: rt.description != null ? String(rt.description) : "",
+            propertyType: uiPropertyType,
+            pricingModel: (String(rt.pricingStyle ?? "per_unit") as "per_person" | "per_unit"),
+            maxGuests: String(rt.maxGuests ?? 2),
+            maxAdults: String(rt.maxAdults ?? 2),
+            maxChildren: String(rt.maxChildren ?? 0),
+            basePrice: rt.basePrice != null ? String(rt.basePrice) : "",
+            pricePerAdult: rt.adultPrice != null ? String(rt.adultPrice) : "",
+            pricePerChild: rt.childPrice != null ? String(rt.childPrice) : "",
+            extraPersonFee: "",
+            size: rt.sizeM2 != null ? String(rt.sizeM2) : "",
+            selectedAmenities: amenityIds,
+            isActive: String(rt.status ?? "active") === "active",
+          });
+        } catch (e) {
+          console.error(e);
+          toast({
+            title: "Erro",
+            description: "Falha ao carregar tipo de quarto para edição.",
+            variant: "destructive",
+          });
+          onOpenChange(false);
+        } finally {
+          setIsLoadingEdit(false);
+        }
+      } else {
+        setFormData(emptyForm(propsList[0] ? String(propsList[0].id) : ""));
+      }
+    };
 
     setAmenitiesLoading(true);
-    api
-      .getAmenities(undefined, undefined, "active")
-      .then((res) => {
-        if (res.success && res.data?.amenities) {
-          const list = (res.data.amenities as AmenityOption[]) ?? [];
-          setAmenities(list.filter((a) => a?.id != null));
-        } else {
-          setAmenities([]);
-        }
-      })
+    loadBase()
       .catch((e) => {
         console.error(e);
-        setAmenities([]);
         toast({
           title: "Aviso",
-          description: "Não foi possível carregar as amenidades da base.",
+          description: "Não foi possível carregar dados do formulário.",
           variant: "destructive",
         });
       })
       .finally(() => setAmenitiesLoading(false));
-  }, [open]);
+  }, [open, editId]);
 
   const toggleAmenity = (id: number) => {
     setFormData((prev) => ({
@@ -198,6 +259,12 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
     const set = new Set(formData.selectedAmenities);
     return amenities.filter((a) => set.has(a.id)).map((a) => a.name);
   }, [amenities, formData.selectedAmenities]);
+
+  const resetAndClose = () => {
+    onOpenChange(false);
+    setStep(1);
+    setFormData(emptyForm(properties[0] ? String(properties[0].id) : ""));
+  };
 
   const handleSubmit = async () => {
     const propertyId = parseInt(formData.propertyId, 10);
@@ -218,55 +285,55 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
       toast({ title: "Erro", description: "Tipo de propriedade é obrigatório.", variant: "destructive" });
       return;
     }
+
+    const payload = {
+      propertyId,
+      code: formData.code.trim(),
+      name: formData.name.trim(),
+      description: formData.description?.trim() || null,
+      propertyType: propertyType as "hotel" | "apart-hotel" | "loft" | "temporada" | "hostel" | "resort",
+      maxGuests: parseInt(formData.maxGuests, 10) || 2,
+      maxAdults: parseInt(formData.maxAdults, 10) || 2,
+      maxChildren: parseInt(formData.maxChildren, 10) || 0,
+      basePrice: formData.basePrice ? parseFloat(formData.basePrice) : null,
+      adultPrice: formData.pricePerAdult ? parseFloat(formData.pricePerAdult) : 0,
+      childPrice: formData.pricePerChild ? parseFloat(formData.pricePerChild) : 0,
+      infantPrice: 0,
+      pricingStyle: (formData.pricingModel || "per_unit") as "per_unit" | "per_person",
+      sizeM2: formData.size ? parseFloat(formData.size) : null,
+      status: formData.isActive ? "active" : "inactive",
+      amenityIds: formData.selectedAmenities,
+    };
+
     try {
       setIsSubmitting(true);
-      const res = await api.createRoomType({
-        propertyId,
-        code: formData.code.trim(),
-        name: formData.name.trim(),
-        description: formData.description?.trim() || null,
-        propertyType: propertyType as "hotel" | "apart-hotel" | "loft" | "temporada" | "hostel" | "resort",
-        maxGuests: parseInt(formData.maxGuests, 10) || 2,
-        maxAdults: parseInt(formData.maxAdults, 10) || 2,
-        maxChildren: parseInt(formData.maxChildren, 10) || 0,
-        basePrice: formData.basePrice ? parseFloat(formData.basePrice) : null,
-        adultPrice: formData.pricePerAdult ? parseFloat(formData.pricePerAdult) : 0,
-        childPrice: formData.pricePerChild ? parseFloat(formData.pricePerChild) : 0,
-        infantPrice: 0,
-        pricingStyle: (formData.pricingModel || "per_unit") as "per_unit" | "per_person",
-        sizeM2: formData.size ? parseFloat(formData.size) : null,
-        status: formData.isActive ? "active" : "inactive",
-        amenityIds: formData.selectedAmenities,
-      });
+      const res = isEditMode && editId
+        ? await api.updateRoomType(editId, payload)
+        : await api.createRoomType(payload);
+
       if (res.success) {
-        toast({ title: "Tipo de Quarto Criado", description: `${formData.name} foi cadastrado com sucesso!` });
-        void queryClient.invalidateQueries({ queryKey: ["roomTypes"] });
-        onOpenChange(false);
-        setStep(1);
-        setFormData({
-          propertyId: properties[0] ? String(properties[0].id) : "",
-          name: "",
-          code: "",
-          description: "",
-          propertyType: "",
-          pricingModel: "",
-          maxGuests: "2",
-          maxAdults: "2",
-          maxChildren: "1",
-          basePrice: "",
-          pricePerAdult: "",
-          pricePerChild: "",
-          extraPersonFee: "",
-          size: "",
-          selectedAmenities: [],
-          isActive: true,
+        toast({
+          title: isEditMode ? "Tipo de Quarto Atualizado" : "Tipo de Quarto Criado",
+          description: `${formData.name} foi ${isEditMode ? "atualizado" : "cadastrado"} com sucesso!`,
         });
+        void queryClient.invalidateQueries({ queryKey: ["roomTypes"] });
+        resetAndClose();
       } else {
-        toast({ title: "Erro", description: (res as { error?: { message?: string } }).error?.message ?? "Falha ao criar tipo de quarto.", variant: "destructive" });
+        toast({
+          title: "Erro",
+          description:
+            (res as { error?: { message?: string } }).error?.message ??
+            `Falha ao ${isEditMode ? "atualizar" : "criar"} tipo de quarto.`,
+          variant: "destructive",
+        });
       }
     } catch (e) {
       console.error(e);
-      toast({ title: "Erro", description: "Falha ao criar tipo de quarto.", variant: "destructive" });
+      toast({
+        title: "Erro",
+        description: `Falha ao ${isEditMode ? "atualizar" : "criar"} tipo de quarto.`,
+        variant: "destructive",
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -302,7 +369,7 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
               <div className="absolute inset-0 bg-gradient-to-br from-cyan-900/70 to-slate-950/80" />
               <div className="relative">
                 <p className="text-xs uppercase tracking-wider text-cyan-200/90">Room Type Wizard</p>
-                <h3 className="mt-1 text-lg font-semibold">Criação guiada</h3>
+                <h3 className="mt-1 text-lg font-semibold">{isEditMode ? "Edição guiada" : "Criação guiada"}</h3>
                 <p className="text-xs text-slate-300 mt-1">
                   Fluxo robusto com progressão por etapas.
                 </p>
@@ -358,10 +425,12 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
                 </div>
                 <div className="flex-1">
                   <DialogTitle className="text-2xl font-bold text-foreground">
-                    Novo Tipo de Quarto
+                    {isEditMode ? "Editar Tipo de Quarto" : "Novo Tipo de Quarto"}
                   </DialogTitle>
                   <p className="text-muted-foreground mt-1">
-                    Configure uma nova categoria de acomodação
+                    {isEditMode
+                      ? "Atualize a categoria de acomodação"
+                      : "Configure uma nova categoria de acomodação"}
                   </p>
                 </div>
               </div>
@@ -376,6 +445,13 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
 
             <ScrollArea className="flex-1 min-h-0 h-full">
               <div className="py-6 px-6 space-y-6">
+                {(amenitiesLoading || isLoadingEdit) ? (
+                  <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    {isLoadingEdit ? "Carregando tipo de quarto..." : "Carregando formulário..."}
+                  </div>
+                ) : (
+                  <>
             {step === 1 && (
               <div className="space-y-6">
                 {/* Property Selection */}
@@ -769,6 +845,8 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
                 </div>
               </div>
             )}
+                  </>
+                )}
               </div>
             </ScrollArea>
 
@@ -781,11 +859,11 @@ export function RoomTypeModal({ open, onOpenChange }: RoomTypeModalProps) {
               </Button>
               <Button
                 onClick={() => step < 3 ? setStep(step + 1) : void handleSubmit()}
-                disabled={isSubmitting}
+                disabled={isSubmitting || isLoadingEdit || amenitiesLoading}
                 className="bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white"
               >
                 {isSubmitting && step === 3 ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                {step < 3 ? "Continuar" : "Criar Tipo de Quarto"}
+                {step < 3 ? "Continuar" : isEditMode ? "Salvar Alterações" : "Criar Tipo de Quarto"}
               </Button>
             </div>
           </div>

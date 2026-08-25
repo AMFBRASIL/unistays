@@ -85,6 +85,8 @@ export interface RoomTypeDisplay {
   name: string;
   code: string;
   description?: string | null;
+  propertyId?: number | null;
+  propertyName?: string | null;
   propertyType: string;
   pricingModel: string;
   maxGuests: number;
@@ -107,6 +109,8 @@ function mapApiRoomTypeToDisplay(rt: Record<string, unknown>): RoomTypeDisplay {
     name: String(rt.name ?? ""),
     code: String(rt.code ?? ""),
     description: rt.description != null ? String(rt.description) : null,
+    propertyId: rt.propertyId != null ? Number(rt.propertyId) : null,
+    propertyName: rt.propertyName != null ? String(rt.propertyName) : null,
     propertyType: String(rt.propertyType ?? "hotel"),
     pricingModel: String(rt.pricingStyle ?? "per_unit"),
     maxGuests: Number(rt.maxGuests ?? 2),
@@ -125,6 +129,7 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPropertyType, setSelectedPropertyType] = useState<string | null>(null);
   const [newRoomTypeModalOpen, setNewRoomTypeModalOpen] = useState(false);
+  const [editingRoomTypeId, setEditingRoomTypeId] = useState<number | null>(null);
   const [roomsByTypeModalOpen, setRoomsByTypeModalOpen] = useState(false);
   const [selectedRoomType, setSelectedRoomType] = useState<RoomTypeDisplay | null>(null);
   const [roomTypes, setRoomTypes] = useState<RoomTypeDisplay[]>([]);
@@ -158,10 +163,23 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
     setRoomsByTypeModalOpen(true);
   };
 
+  const handleEditRoomType = (roomType: RoomTypeDisplay) => {
+    setEditingRoomTypeId(roomType.id);
+    setNewRoomTypeModalOpen(true);
+  };
+
+  const handleOpenNewRoomType = () => {
+    setEditingRoomTypeId(null);
+    setNewRoomTypeModalOpen(true);
+  };
+
   const filteredRoomTypes = roomTypes.filter((type) => {
-    const matchesSearch = type.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         type.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         (type.description ?? "").toLowerCase().includes(searchQuery.toLowerCase());
+    const q = searchQuery.toLowerCase();
+    const matchesSearch =
+      type.name.toLowerCase().includes(q) ||
+      type.code.toLowerCase().includes(q) ||
+      (type.description ?? "").toLowerCase().includes(q) ||
+      (type.propertyName ?? "").toLowerCase().includes(q);
     const matchesPropertyType = !selectedPropertyType || type.propertyType === selectedPropertyType;
     return matchesSearch && matchesPropertyType;
   });
@@ -261,7 +279,7 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
                     </div>
                   </div>
                   <Button
-                    onClick={() => setNewRoomTypeModalOpen(true)}
+                    onClick={handleOpenNewRoomType}
                     className="bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white"
                   >
                     <Plus className="h-4 w-4 mr-2" />
@@ -409,12 +427,18 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
                           </div>
 
                           {/* Bottom info */}
-                          <div className="absolute bottom-3 left-3 right-3 flex justify-between items-end">
-                            <div>
-                              <p className="text-white font-bold text-lg">{roomType.name}</p>
+                          <div className="absolute bottom-3 left-3 right-3 flex justify-between items-end gap-2">
+                            <div className="min-w-0">
+                              <p className="text-white font-bold text-lg leading-tight">{roomType.name}</p>
                               <p className="text-white/70 text-sm">Código: {roomType.code}</p>
+                              <p className="text-white/90 text-xs mt-1 flex items-center gap-1 truncate">
+                                <Building className="h-3 w-3 shrink-0 opacity-90" />
+                                <span className="truncate">
+                                  {roomType.propertyName || (roomType.propertyId ? `Propriedade #${roomType.propertyId}` : "Propriedade não informada")}
+                                </span>
+                              </p>
                             </div>
-                            <div className="text-right">
+                            <div className="text-right shrink-0">
                               <p className="text-white/70 text-xs">A partir de</p>
                               <p className="text-white font-bold text-xl">
                                 {roomType.basePrice > 0 ? `R$ ${roomType.basePrice.toLocaleString("pt-BR")}` : "—"}
@@ -471,7 +495,7 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
                           {/* Actions */}
                           <div className="flex items-center justify-between pt-2 border-t border-border">
                             <div className="flex gap-2">
-                              <Button variant="outline" size="sm">
+                              <Button variant="outline" size="sm" onClick={() => handleEditRoomType(roomType)}>
                                 <Edit className="h-3.5 w-3.5 mr-1" />
                                 Editar
                               </Button>
@@ -518,7 +542,7 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
                         : "Tente ajustar os filtros ou cadastre um novo tipo de quarto"}
                     </p>
                     <Button 
-                      onClick={() => setNewRoomTypeModalOpen(true)}
+                      onClick={handleOpenNewRoomType}
                       className="mt-4"
                     >
                       <Plus className="h-4 w-4 mr-2" />
@@ -535,12 +559,16 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
         </DialogContent>
       </Dialog>
 
-      {/* New Room Type Modal */}
+      {/* New / Edit Room Type Modal */}
       <RoomTypeModal 
-        open={newRoomTypeModalOpen} 
+        open={newRoomTypeModalOpen}
+        editId={editingRoomTypeId}
         onOpenChange={(isOpen) => {
           setNewRoomTypeModalOpen(isOpen);
-          if (!isOpen) loadRoomTypes();
+          if (!isOpen) {
+            setEditingRoomTypeId(null);
+            loadRoomTypes();
+          }
         }} 
       />
 
