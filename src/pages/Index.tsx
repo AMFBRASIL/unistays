@@ -35,6 +35,31 @@ import {
 
 type PropertyType = 'all' | 'hotel' | 'apart-hotel' | 'loft' | 'temporada';
 
+type PropertyTypeStats = { units: number; occupancy: number; revenue: number; longStay: number };
+
+type DashboardStats = {
+  byPropertyType: Record<string, PropertyTypeStats>;
+  owners: { total: number; activeContracts: number; pendingPayments: number; totalCommission: number };
+  services: { coworking: number; rooftop: number; cleaning: number };
+  kpis: {
+    occupancyRate: number;
+    totalRevenue: number;
+    longStayContracts: number;
+    availableUnits: { occupied: number; total: number };
+    trends?: { occupancyChange?: number | null; revenueChange?: number | null };
+  };
+  monthlyStats: { reservations: number; activeGuests: number; monthlyRevenue: number };
+  recentReservations: unknown[];
+  occupancyTrend?: { name: string; ocupacao: number; receita: number }[];
+  revenueByChannel?: { name: string; value: number; amount?: number }[];
+};
+
+const formatRevenueShort = (value: number) => {
+  if (value >= 1_000_000) return `R$ ${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `R$ ${(value / 1_000).toFixed(1)}k`;
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
+};
+
 const propertyTypeConfig = {
   hotel: { label: 'Hotel', icon: Hotel, color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
   'apart-hotel': { label: 'Apart-Hotel', icon: Building2, color: 'bg-purple-500/10 text-purple-500 border-purple-500/20' },
@@ -53,7 +78,7 @@ const Index = () => {
   });
 
   // Use real data or fallback to empty structure
-  const hybridStats = dashboardResponse?.data || {
+  const hybridStats: DashboardStats = (dashboardResponse?.data as DashboardStats) || {
     byPropertyType: {
       hotel: { units: 0, occupancy: 0, revenue: 0, longStay: 0 },
       'apart-hotel': { units: 0, occupancy: 0, revenue: 0, longStay: 0 },
@@ -65,13 +90,29 @@ const Index = () => {
     kpis: { occupancyRate: 0, totalRevenue: 0, longStayContracts: 0, availableUnits: { occupied: 0, total: 0 } },
     monthlyStats: { reservations: 0, activeGuests: 0, monthlyRevenue: 0 },
     recentReservations: [],
+    occupancyTrend: [],
+    revenueByChannel: [],
   };
 
-  const totalUnits = Object.values(hybridStats.byPropertyType).reduce((acc: number, curr: any) => acc + (curr.units || 0), 0);
-  const totalOccupied = hybridStats.kpis.availableUnits.occupied;
-  const totalRevenue = hybridStats.kpis.totalRevenue;
-  const totalLongStay = hybridStats.kpis.longStayContracts;
-  const avgOccupancy = hybridStats.kpis.occupancyRate;
+  const typeStats =
+    selectedType === 'all'
+      ? null
+      : hybridStats.byPropertyType[selectedType as keyof typeof hybridStats.byPropertyType];
+
+  const totalUnits =
+    selectedType === 'all'
+      ? Object.values(hybridStats.byPropertyType).reduce((acc, curr) => acc + (curr.units || 0), 0)
+      : typeStats?.units || 0;
+
+  const totalOccupied =
+    selectedType === 'all'
+      ? hybridStats.kpis.availableUnits.occupied
+      : Math.round(((typeStats?.units || 0) * (typeStats?.occupancy || 0)) / 100);
+
+  const totalRevenue = selectedType === 'all' ? hybridStats.kpis.totalRevenue : typeStats?.revenue || 0;
+  const totalLongStay = selectedType === 'all' ? hybridStats.kpis.longStayContracts : typeStats?.longStay || 0;
+  const avgOccupancy = selectedType === 'all' ? hybridStats.kpis.occupancyRate : typeStats?.occupancy || 0;
+  const trends = hybridStats.kpis.trends;
 
   return (
     <DashboardLayout>
@@ -126,15 +167,15 @@ const Index = () => {
           <KPICard
             title="Taxa de Ocupação"
             value={`${avgOccupancy}%`}
-            change={8.2}
+            change={trends?.occupancyChange}
             changeLabel="vs. semana anterior"
             icon={Percent}
             iconColor="text-primary"
           />
           <KPICard
             title="Receita Total"
-            value={`R$ ${(totalRevenue / 1000).toFixed(0)}k`}
-            change={12.5}
+            value={formatRevenueShort(totalRevenue)}
+            change={selectedType === 'all' ? trends?.revenueChange : null}
             changeLabel="vs. mês anterior"
             icon={DollarSign}
             iconColor="text-success"
@@ -142,16 +183,14 @@ const Index = () => {
           <KPICard
             title="Contratos Long Stay"
             value={totalLongStay.toString()}
-            change={15.3}
-            changeLabel="vs. mês anterior"
+            changeLabel="ativos hoje"
             icon={FileText}
             iconColor="text-accent"
           />
           <KPICard
             title="Unidades Disponíveis"
-            value={`${(totalUnits || 0) - (totalOccupied || 0)}/${totalUnits || 0}`}
-            change={-2}
-            changeLabel="vs. ontem"
+            value={`${Math.max(0, (totalUnits || 0) - (totalOccupied || 0))}/${totalUnits || 0}`}
+            changeLabel="livres / total"
             icon={BedDouble}
             iconColor="text-warning"
           />
@@ -183,7 +222,7 @@ const Index = () => {
                     <Progress value={stats.occupancy || 0} className="h-2" />
                     <div className="flex justify-between text-sm pt-1">
                       <span className="text-muted-foreground">Receita</span>
-                      <span className="font-medium text-success">R$ {((stats.revenue || 0) / 1000).toFixed(0)}k</span>
+                      <span className="font-medium text-success">{formatRevenueShort(stats.revenue || 0)}</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Long Stay</span>
@@ -202,10 +241,10 @@ const Index = () => {
         {/* Charts Row */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
-            <OccupancyChart />
+            <OccupancyChart data={hybridStats.occupancyTrend} loading={isLoading} />
           </div>
           <div>
-            <RevenueByChannel />
+            <RevenueByChannel data={hybridStats.revenueByChannel} loading={isLoading} />
           </div>
         </div>
 
@@ -331,7 +370,7 @@ const Index = () => {
             </div>
             <div>
               <p className="text-2xl font-bold text-foreground">
-                R$ {((hybridStats.monthlyStats.monthlyRevenue || 0) / 1000).toFixed(0)}k
+                {formatRevenueShort(hybridStats.monthlyStats.monthlyRevenue || 0)}
               </p>
               <p className="text-xs text-muted-foreground">Receita mensal</p>
             </div>
