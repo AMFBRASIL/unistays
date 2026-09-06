@@ -138,12 +138,27 @@ export class ChannexAdapter implements ChannelManagerAdapter {
 
       if (!response.ok) {
         const err = data?.errors;
-        const errorMsg =
+        const details =
+          typeof err?.details === 'string'
+            ? err.details
+            : err?.details && typeof err.details === 'object'
+              ? JSON.stringify(err.details)
+              : Array.isArray(err?.details)
+                ? err.details.join(', ')
+                : null;
+        const title =
           (typeof err?.title === 'string' && err.title) ||
-          (Array.isArray(err?.details) ? err.details.join(', ') : null) ||
-          (typeof err?.details === 'string' ? err.details : null) ||
           (typeof err === 'string' ? err : null) ||
           `Channex HTTP ${response.status}`;
+        const code = typeof err?.code === 'string' ? err.code : null;
+        let errorMsg = details ? `${title}: ${details}` : title;
+        if (response.status === 403 || /forbidden/i.test(title)) {
+          errorMsg =
+            `${errorMsg}. A API Key não tem permissão para escrever nesta property Channex. ` +
+            `Gere uma key com “Access to all properties” em staging.channex.io (Organisation → API Keys) ` +
+            `ou remova o mapeamento antigo e provisione de novo.`;
+        }
+        if (code) errorMsg = `[${code}] ${errorMsg}`;
         return { ok: false, status: response.status, data: data as T, errorMsg };
       }
 
@@ -250,6 +265,65 @@ export class ChannexAdapter implements ChannelManagerAdapter {
     };
   }
 
+  async listGroups(
+    credentials: Record<string, string>,
+  ): Promise<Array<{ id: string; title: string; propertyIds: string[] }>> {
+    const result = await this.request<any>(credentials, '/groups');
+    if (!result.ok) {
+      throw new Error(result.errorMsg || 'Erro ao listar groups Channex');
+    }
+    const items = Array.isArray(result.data?.data) ? result.data.data : [];
+    return items.map((item: any) => {
+      const attrs = item.attributes || item;
+      const props = item.relationships?.properties?.data;
+      const propertyIds = Array.isArray(props)
+        ? props.map((p: any) => String(p.id || p.attributes?.id || '')).filter(Boolean)
+        : [];
+      return {
+        id: String(item.id || attrs.id || ''),
+        title: String(attrs.title || 'Group'),
+        propertyIds,
+      };
+    });
+  }
+
+  /** Resolve group for new properties (prefer group that already owns related inventory). */
+  async resolveGroupId(
+    credentials: Record<string, string>,
+    preferredPropertyId?: string | null,
+  ): Promise<string | null> {
+    try {
+      const groups = await this.listGroups(credentials);
+      if (!groups.length) return null;
+      if (preferredPropertyId) {
+        const owning = groups.find((g) => g.propertyIds.includes(preferredPropertyId));
+        if (owning?.id) return owning.id;
+      }
+      // Prefer a named default / first group with any properties, else first group
+      const withProps = groups.find((g) => g.propertyIds.length > 0);
+      return (withProps || groups[0])?.id || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async getProperty(
+    credentials: Record<string, string>,
+    propertyId: string,
+  ): Promise<{ ok: boolean; id?: string; title?: string; message?: string; status?: number }> {
+    const result = await this.request<any>(credentials, `/properties/${propertyId}`);
+    if (!result.ok) {
+      return { ok: false, message: result.errorMsg, status: result.status };
+    }
+    const item = result.data?.data;
+    const attrs = item?.attributes || item || {};
+    return {
+      ok: true,
+      id: String(item?.id || attrs.id || propertyId),
+      title: String(attrs.title || attrs.name || propertyId),
+    };
+  }
+
   async createProperty(
     credentials: Record<string, string>,
     input: {
@@ -264,8 +338,10 @@ export class ChannexAdapter implements ChannelManagerAdapter {
       address?: string | null;
       timezone?: string | null;
       propertyType?: string | null;
+      groupId?: string | null;
     },
   ): Promise<{ ok: boolean; id?: string; message?: string }> {
+    const groupId = input.groupId || (await this.resolveGroupId(credentials));
     const body = {
       property: {
         title: input.title,
@@ -279,6 +355,7 @@ export class ChannexAdapter implements ChannelManagerAdapter {
         address: input.address || undefined,
         timezone: input.timezone || 'America/Sao_Paulo',
         property_type: input.propertyType || 'hotel',
+        ...(groupId ? { group_id: groupId } : {}),
         facilities: [],
         settings: {
           allow_availability_autoupdate_on_confirmation: true,
@@ -470,20 +547,39 @@ export class ChannexAdapter implements ChannelManagerAdapter {
       return { ok: true, message: 'Nenhuma restrição para enviar' };
     }
 
-    const result = await this.request<any>(credentials, '/restrictions', {
-      method: 'POST',
-      body: JSON.stringify({ values }),
-    });
-    if (!result.ok) {
-      return { ok: false, message: result.errorMsg || 'Falha ao atualizar rates/restrictions Channex' };
+    // API Channex: "Updating multiple properties in a single request is not allowed"
+    const byProperty = new Map<string, ChannexRestrictionValue[]>();
+    for (const v of values) {
+      const pid = String(v.property_id || '');
+      if (!pid) continue;
+      const list = byProperty.get(pid) || [];
+      list.push(v);
+      byProperty.set(pid, list);
     }
-    const warnings = Array.isArray(result.data?.meta?.warnings) ? result.data.meta.warnings : [];
+
+    const allWarnings: unknown[] = [];
+    for (const propValues of byProperty.values()) {
+      const result = await this.request<any>(credentials, '/restrictions', {
+        method: 'POST',
+        body: JSON.stringify({ values: propValues }),
+      });
+      if (!result.ok) {
+        return {
+          ok: false,
+          message: result.errorMsg || 'Falha ao atualizar rates/restrictions Channex',
+        };
+      }
+      if (Array.isArray(result.data?.meta?.warnings)) {
+        allWarnings.push(...result.data.meta.warnings);
+      }
+    }
+
     return {
       ok: true,
-      message: warnings.length
-        ? `Rates enviados com ${warnings.length} aviso(s)`
+      message: allWarnings.length
+        ? `Rates enviados com ${allWarnings.length} aviso(s)`
         : 'Rates/restrictions enviados à Channex',
-      warnings,
+      warnings: allWarnings,
     };
   }
 
@@ -495,19 +591,32 @@ export class ChannexAdapter implements ChannelManagerAdapter {
       return { ok: true, message: 'Nenhuma disponibilidade para enviar' };
     }
 
-    const result = await this.request(credentials, '/availability', {
-      method: 'POST',
-      body: JSON.stringify({
-        values: values.map((v) => ({
-          ...v,
-          availability: Math.max(0, Math.floor(v.availability)),
-        })),
-      }),
-    });
-
-    if (!result.ok) {
-      return { ok: false, message: result.errorMsg || 'Falha ao atualizar disponibilidade Channex' };
+    // Mesma regra: um property_id por POST /availability
+    const byProperty = new Map<string, ChannexAvailabilityValue[]>();
+    for (const v of values) {
+      const pid = String(v.property_id || '');
+      if (!pid) continue;
+      const list = byProperty.get(pid) || [];
+      list.push(v);
+      byProperty.set(pid, list);
     }
+
+    for (const propValues of byProperty.values()) {
+      const result = await this.request(credentials, '/availability', {
+        method: 'POST',
+        body: JSON.stringify({
+          values: propValues.map((v) => ({
+            ...v,
+            availability: Math.max(0, Math.floor(v.availability)),
+          })),
+        }),
+      });
+
+      if (!result.ok) {
+        return { ok: false, message: result.errorMsg || 'Falha ao atualizar disponibilidade Channex' };
+      }
+    }
+
     return { ok: true, message: 'Disponibilidade enviada à Channex' };
   }
 

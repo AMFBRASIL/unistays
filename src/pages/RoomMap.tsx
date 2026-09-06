@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { resolveUnitOperationalStatus } from "@/lib/unitOperationalStatus";
 import { UnitModal } from "@/components/rooms/UnitModal";
 import {
   BedDouble,
@@ -195,44 +196,25 @@ export default function RoomMap() {
 
         const property = rawProperties.find((p: any) => p.id === u.propertyId);
 
-        // Determine displayed status based on business priority:
-        // Initial status from unit, but if it's a service status without an active task, default to available
-        let baseStatus = u.status || 'available';
-
-        // Auto-detect checkout passed
         let isCheckoutPassed = false;
         if (guestRes && property) {
           const settings = typeof property.settings === 'string' ? JSON.parse(property.settings) : property.settings;
-          const checkoutTimeStr = settings?.checkOutTime || "11:00"; // default if missing
-
+          const checkoutTimeStr = settings?.checkOutTime || "11:00";
           const [hours, minutes] = (checkoutTimeStr || "11:00").split(':').map(Number);
-
-          // Re-parse checkOut to local date object for comparison
           const checkOutDateParts = guestRes.checkOut.toString().split('T')[0].split('-').map(Number);
           const checkoutDateTime = new Date(checkOutDateParts[0], checkOutDateParts[1] - 1, checkOutDateParts[2], hours, minutes, 0, 0);
-
           if (now > checkoutDateTime) {
             isCheckoutPassed = true;
           }
         }
-        if (['cleaning', 'maintenance', 'arrangement'].includes(baseStatus) && !task) {
-          baseStatus = 'available';
-        }
 
-        let displayedStatus = baseStatus;
+        let displayedStatus = resolveUnitOperationalStatus({
+          unitStatus: u.status,
+          activeTask: task,
+          isOccupiedByReservation: !!guestRes && !isCheckoutPassed,
+          isCheckoutPassed,
+        });
 
-        if (task) {
-          const category = task.category?.toLowerCase();
-          if (category === 'cleaning') displayedStatus = 'cleaning';
-          else if (category === 'maintenance') displayedStatus = 'maintenance';
-          else if (category === 'arrangement') displayedStatus = 'arrangement';
-        } else if (isCheckoutPassed) {
-          displayedStatus = 'cleaning'; // Visual block for cleaning after checkout time
-        } else if (guestRes) {
-          displayedStatus = 'occupied';
-        }
-
-        // Ensure status matches one of our config keys
         if (!statusConfig[displayedStatus]) {
           displayedStatus = 'available';
         }

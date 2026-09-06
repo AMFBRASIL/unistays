@@ -5,6 +5,7 @@ import { AppError } from '@/middlewares/error.middleware';
 import { CreateHousekeepingTaskInput, UpdateHousekeepingTaskInput } from '@/validators/housekeeping.validator';
 import { v4 as uuidv4 } from 'uuid';
 import { EventBus } from '@/events/EventBus';
+import { HousekeepingUnitSync } from '@/services/HousekeepingUnitSync';
 
 export class HousekeepingController {
     async getAll(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
@@ -156,6 +157,13 @@ export class HousekeepingController {
                 'pending'
             ]);
 
+            await HousekeepingUnitSync.applyTaskToUnit(
+                queryRunner,
+                data.unitId,
+                'pending',
+                data.category,
+            );
+
             await queryRunner.commitTransaction();
 
             const newTaskRows = await queryRunner.query(
@@ -219,7 +227,7 @@ export class HousekeepingController {
             const data: UpdateHousekeepingTaskInput = req.body;
 
             const existingTask = await queryRunner.query(
-                `SELECT id, status FROM housekeeping_tasks WHERE id = ? AND deleted_at IS NULL`,
+                `SELECT id, status, unit_id, category FROM housekeeping_tasks WHERE id = ? AND deleted_at IS NULL`,
                 [parseInt(id, 10)]
             );
 
@@ -292,6 +300,18 @@ export class HousekeepingController {
             const updateQuery = `UPDATE housekeeping_tasks SET ${updateFields.join(', ')} WHERE id = ?`;
 
             await queryRunner.query(updateQuery, updateValues);
+
+            if (data.status !== undefined) {
+                const unitId = currentTask.unit_id;
+                const category = data.category ?? currentTask.category;
+                await HousekeepingUnitSync.applyTaskToUnit(
+                    queryRunner,
+                    unitId,
+                    data.status,
+                    category,
+                );
+            }
+
             await queryRunner.commitTransaction();
             await queryRunner.release();
 
@@ -315,7 +335,7 @@ export class HousekeepingController {
             const { id } = req.params;
 
             const existingTask = await queryRunner.query(
-                `SELECT id FROM housekeeping_tasks WHERE id = ? AND deleted_at IS NULL`,
+                `SELECT id, unit_id FROM housekeeping_tasks WHERE id = ? AND deleted_at IS NULL`,
                 [parseInt(id, 10)]
             );
 
@@ -323,10 +343,17 @@ export class HousekeepingController {
                 throw new AppError('Tarefa não encontrada', 404);
             }
 
+            const taskId = parseInt(id, 10);
+            const unitId = existingTask[0].unit_id;
+
             await queryRunner.query(
                 `UPDATE housekeeping_tasks SET deleted_at = NOW() WHERE id = ?`,
-                [parseInt(id, 10)]
+                [taskId]
             );
+
+            if (unitId) {
+                await HousekeepingUnitSync.releaseUnitIfNoActiveTasks(queryRunner, unitId, taskId);
+            }
 
             await queryRunner.commitTransaction();
             await queryRunner.release();

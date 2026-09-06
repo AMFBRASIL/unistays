@@ -99,8 +99,34 @@ export class MaintenanceOrderController {
                 throw new AppError('Ordem de manutenção não encontrada', 404);
             }
 
+            const prevStatus = order.status;
             this.repository.merge(order, data);
             await this.repository.save(order);
+
+            // Libera unit ao concluir/cancelar ordem de manutenção
+            const nextStatus = order.status;
+            const unitId = order.unitId;
+            if (
+                unitId &&
+                (nextStatus === MaintenanceStatus.COMPLETED || nextStatus === MaintenanceStatus.CANCELLED) &&
+                prevStatus !== nextStatus
+            ) {
+                await AppDataSource.query(
+                    `UPDATE units SET status = 'available', updated_at = NOW()
+                     WHERE id = ? AND status IN ('cleaning', 'maintenance', 'arrangement', 'blocked')`,
+                    [unitId],
+                );
+            } else if (
+                unitId &&
+                (nextStatus === MaintenanceStatus.IN_PROGRESS || nextStatus === MaintenanceStatus.SCHEDULED || nextStatus === MaintenanceStatus.PENDING) &&
+                prevStatus !== nextStatus
+            ) {
+                await AppDataSource.query(
+                    `UPDATE units SET status = 'maintenance', updated_at = NOW()
+                     WHERE id = ? AND status NOT IN ('occupied')`,
+                    [unitId],
+                );
+            }
 
             return res.json({ success: true, data: order });
         } catch (error) {

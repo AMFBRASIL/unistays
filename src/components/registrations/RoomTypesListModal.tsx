@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -8,11 +8,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { Loader2, CheckCircle2, ListFilter, LayoutGrid } from "lucide-react";
 import {
   BedDouble,
   Users,
@@ -40,6 +37,8 @@ import {
   Eye,
   MoreVertical,
   Copy,
+  Loader2,
+  X,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -68,9 +67,12 @@ const amenityIcons: Record<string, React.ComponentType<{ className?: string }>> 
   view: Mountain,
 };
 
-const propertyTypeConfig: Record<string, { icon: React.ComponentType<{ className?: string }>; label: string; color: string }> = {
+/** Chave canônica → UI (evita Apart-Hotel duplicado) */
+const propertyTypeConfig: Record<
+  string,
+  { icon: React.ComponentType<{ className?: string }>; label: string; color: string }
+> = {
   hotel: { icon: Hotel, label: "Hotel", color: "from-blue-500 to-blue-600" },
-  apart: { icon: Building, label: "Apart-Hotel", color: "from-violet-500 to-violet-600" },
   "apart-hotel": { icon: Building, label: "Apart-Hotel", color: "from-violet-500 to-violet-600" },
   loft: { icon: Home, label: "Loft", color: "from-emerald-500 to-emerald-600" },
   temporada: { icon: Palmtree, label: "Temporada", color: "from-amber-500 to-amber-600" },
@@ -78,7 +80,14 @@ const propertyTypeConfig: Record<string, { icon: React.ComponentType<{ className
   resort: { icon: Palmtree, label: "Resort", color: "from-cyan-500 to-cyan-600" },
 };
 
-const PLACEHOLDER_IMAGE = "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=400";
+function normalizePropertyType(raw: string): string {
+  const t = (raw || "hotel").toLowerCase().trim();
+  if (t === "apart" || t === "apart_hotel" || t === "aparthotel") return "apart-hotel";
+  return propertyTypeConfig[t] ? t : "hotel";
+}
+
+const PLACEHOLDER_IMAGE =
+  "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=400";
 
 export interface RoomTypeDisplay {
   id: number;
@@ -102,7 +111,9 @@ export interface RoomTypeDisplay {
 
 function mapApiRoomTypeToDisplay(rt: Record<string, unknown>): RoomTypeDisplay {
   const amenities = (rt.amenities as Array<{ icon?: string; code?: string }>) ?? [];
-  const amenityCodes = amenities.map((a) => (a?.icon || a?.code || "") as string).filter(Boolean);
+  const amenityCodes = amenities
+    .map((a) => (a?.icon || a?.code || "") as string)
+    .filter(Boolean);
   const images = (rt.images as string[] | null) ?? null;
   return {
     id: Number(rt.id),
@@ -111,7 +122,7 @@ function mapApiRoomTypeToDisplay(rt: Record<string, unknown>): RoomTypeDisplay {
     description: rt.description != null ? String(rt.description) : null,
     propertyId: rt.propertyId != null ? Number(rt.propertyId) : null,
     propertyName: rt.propertyName != null ? String(rt.propertyName) : null,
-    propertyType: String(rt.propertyType ?? "hotel"),
+    propertyType: normalizePropertyType(String(rt.propertyType ?? "hotel")),
     pricingModel: String(rt.pricingStyle ?? "per_unit"),
     maxGuests: Number(rt.maxGuests ?? 2),
     maxAdults: Number(rt.maxAdults ?? 2),
@@ -155,7 +166,11 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
   };
 
   useEffect(() => {
-    if (open) loadRoomTypes();
+    if (open) {
+      setSearchQuery("");
+      setSelectedPropertyType(null);
+      void loadRoomTypes();
+    }
   }, [open]);
 
   const handleViewRooms = (roomType: RoomTypeDisplay) => {
@@ -173,408 +188,359 @@ export function RoomTypesListModal({ open, onOpenChange }: RoomTypesListModalPro
     setNewRoomTypeModalOpen(true);
   };
 
-  const filteredRoomTypes = roomTypes.filter((type) => {
-    const q = searchQuery.toLowerCase();
-    const matchesSearch =
-      type.name.toLowerCase().includes(q) ||
-      type.code.toLowerCase().includes(q) ||
-      (type.description ?? "").toLowerCase().includes(q) ||
-      (type.propertyName ?? "").toLowerCase().includes(q);
-    const matchesPropertyType = !selectedPropertyType || type.propertyType === selectedPropertyType;
-    return matchesSearch && matchesPropertyType;
-  });
+  const filteredRoomTypes = useMemo(
+    () =>
+      roomTypes.filter((type) => {
+        const q = searchQuery.toLowerCase().trim();
+        const matchesSearch =
+          !q ||
+          type.name.toLowerCase().includes(q) ||
+          type.code.toLowerCase().includes(q) ||
+          (type.description ?? "").toLowerCase().includes(q) ||
+          (type.propertyName ?? "").toLowerCase().includes(q);
+        const matchesPropertyType =
+          !selectedPropertyType || type.propertyType === selectedPropertyType;
+        return matchesSearch && matchesPropertyType;
+      }),
+    [roomTypes, searchQuery, selectedPropertyType],
+  );
 
-  const stats = {
-    total: roomTypes.length,
-    active: roomTypes.filter((t) => t.isActive).length,
-    totalRooms: roomTypes.reduce((sum, t) => sum + t.roomCount, 0),
+  const stats = useMemo(
+    () => ({
+      total: roomTypes.length,
+      active: roomTypes.filter((t) => t.isActive).length,
+      byType: Object.keys(propertyTypeConfig).reduce(
+        (acc, key) => {
+          acc[key] = roomTypes.filter((t) => t.propertyType === key).length;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+    }),
+    [roomTypes],
+  );
+
+  const clearFilters = () => {
+    setSearchQuery("");
+    setSelectedPropertyType(null);
   };
+
   const hasFilters = !!searchQuery.trim() || selectedPropertyType !== null;
-  const progressValue = (() => {
-    let score = 34; // overview pronto
-    if (hasFilters) score += 33;
-    if (filteredRoomTypes.length > 0) score += 33;
-    return Math.min(score, 100);
-  })();
-  const steps = [
-    { key: "overview", title: "Visão Geral", subtitle: "KPIs e contexto", done: true, icon: BedDouble },
-    { key: "filters", title: "Filtros Inteligentes", subtitle: "Busca e segmentação", done: hasFilters, icon: ListFilter },
-    { key: "catalog", title: "Catálogo", subtitle: "Tipos encontrados", done: filteredRoomTypes.length > 0, icon: LayoutGrid },
-  ];
 
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-7xl h-[90vh] overflow-hidden bg-background border-border p-0">
-          <div className="h-full grid md:grid-cols-[300px_1fr]">
-            <aside className="hidden md:flex flex-col border-r border-border/80 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white">
-              <div className="relative p-5 border-b border-white/10">
-                <div
-                  className="absolute inset-0 opacity-25 bg-cover bg-center"
-                  style={{ backgroundImage: `url(${PLACEHOLDER_IMAGE})` }}
-                />
-                <div className="absolute inset-0 bg-gradient-to-br from-cyan-900/70 to-slate-950/80" />
-                <div className="relative">
-                  <p className="text-xs uppercase tracking-wider text-cyan-200/90">Room Types Experience</p>
-                  <h3 className="mt-1 text-lg font-semibold">Fluxo inteligente</h3>
-                  <p className="text-xs text-slate-300 mt-1">
-                    Navegação em etapas com progresso e contexto visual.
+        <DialogContent className="max-w-6xl w-[95vw] h-[90vh] max-h-[90vh] p-0 gap-0 overflow-hidden flex flex-col sm:rounded-xl">
+          {/* Header fixo */}
+          <DialogHeader className="px-5 pt-5 pb-4 border-b border-border shrink-0 space-y-0">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pr-8">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 shrink-0">
+                  <BedDouble className="h-6 w-6 text-blue-600" />
+                </div>
+                <div className="min-w-0 text-left">
+                  <DialogTitle className="text-xl font-semibold text-foreground">
+                    Tipos de Quarto
+                  </DialogTitle>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Categorias de acomodação · {stats.total} cadastrado
+                    {stats.total !== 1 ? "s" : ""}
+                    {stats.active !== stats.total ? ` · ${stats.active} ativo${stats.active !== 1 ? "s" : ""}` : ""}
                   </p>
                 </div>
               </div>
+              <Button
+                onClick={handleOpenNewRoomType}
+                className="bg-blue-600 hover:bg-blue-700 text-white shrink-0"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Novo tipo
+              </Button>
+            </div>
+          </DialogHeader>
 
-              <div className="p-5 border-b border-white/10">
-                <div className="flex items-center justify-between text-xs text-slate-300 mb-2">
-                  <span>Progresso do fluxo</span>
-                  <span>{progressValue}%</span>
-                </div>
-                <Progress
-                  value={progressValue}
-                  className="h-2 bg-white/10 [&>div]:bg-gradient-to-r [&>div]:from-cyan-400 [&>div]:to-blue-500"
-                />
+          {/* KPIs + busca/filtros (fixos) */}
+          <div className="shrink-0 border-b border-border bg-muted/20">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 px-5 pt-4">
+              <div className="rounded-lg border border-border bg-background px-3 py-2.5">
+                <p className="text-xs text-muted-foreground">Total</p>
+                <p className="text-xl font-semibold tabular-nums">{stats.total}</p>
               </div>
-
-              <div className="p-4 space-y-2">
-                {steps.map((step, index) => (
-                  <div
-                    key={step.key}
-                    className={`rounded-xl border px-3 py-3 transition-colors ${
-                      step.done
-                        ? "border-cyan-400/30 bg-cyan-500/10"
-                        : "border-white/10 bg-white/5"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`h-8 w-8 rounded-lg flex items-center justify-center ${
-                          step.done ? "bg-cyan-400/20 text-cyan-300" : "bg-white/10 text-slate-300"
-                        }`}
-                      >
-                        {step.done ? <CheckCircle2 className="h-4 w-4" /> : <step.icon className="h-4 w-4" />}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-white">{`${index + 1}. ${step.title}`}</p>
-                        <p className="text-xs text-slate-300 truncate">{step.subtitle}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+              <div className="rounded-lg border border-border bg-background px-3 py-2.5">
+                <p className="text-xs text-muted-foreground">Ativos</p>
+                <p className="text-xl font-semibold tabular-nums text-emerald-600">{stats.active}</p>
               </div>
-            </aside>
-
-            <div className="flex flex-col min-w-0">
-              <DialogHeader className="px-6 pt-6 pb-4 border-b border-border flex-shrink-0">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-4 min-w-0">
-                    <div className="p-3 rounded-2xl bg-gradient-to-br from-blue-500/10 to-cyan-500/10 border border-blue-500/20">
-                      <BedDouble className="h-8 w-8 text-blue-600" />
-                    </div>
-                    <div className="min-w-0">
-                      <DialogTitle className="text-2xl font-bold text-foreground">
-                        Tipos de Quarto
-                      </DialogTitle>
-                      <p className="text-muted-foreground mt-1">
-                        Gerencie as categorias de acomodação do seu estabelecimento
-                      </p>
-                    </div>
-                  </div>
-                  <Button
-                    onClick={handleOpenNewRoomType}
-                    className="bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white"
-                  >
-                    <Plus className="h-4 w-4 mr-2" />
-                    Novo Tipo de Quarto
-                  </Button>
-                </div>
-                <div className="md:hidden pt-3">
-                  <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
-                    <span>Progresso do fluxo</span>
-                    <span>{progressValue}%</span>
-                  </div>
-                  <Progress value={progressValue} className="h-2" />
-                </div>
-              </DialogHeader>
-
-              {/* Stats Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-6 pb-4 flex-shrink-0">
-                <div className="p-4 rounded-xl bg-gradient-to-br from-blue-500/5 to-cyan-500/5 border border-blue-500/10">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-blue-500/10">
-                      <BedDouble className="h-5 w-5 text-blue-600" />
-                    </div>
-                    <div>
-                      <p className="text-2xl font-bold text-foreground">{stats.total}</p>
-                      <p className="text-sm text-muted-foreground">Tipos Cadastrados</p>
-                    </div>
-                  </div>
-                </div>
-              <div className="p-4 rounded-xl bg-gradient-to-br from-emerald-500/5 to-green-500/5 border border-emerald-500/10">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-emerald-500/10">
-                    <Eye className="h-5 w-5 text-emerald-600" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold text-foreground">{stats.active}</p>
-                    <p className="text-sm text-muted-foreground">Tipos Ativos</p>
-                  </div>
-                </div>
-              </div>
-              <div className="p-4 rounded-xl bg-gradient-to-br from-violet-500/5 to-purple-500/5 border border-violet-500/10">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-violet-500/10">
-                    <Hotel className="h-5 w-5 text-violet-600" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold text-foreground">{stats.totalRooms}</p>
-                    <p className="text-sm text-muted-foreground">Quartos Totais</p>
-                  </div>
-                </div>
+              <div className="rounded-lg border border-border bg-background px-3 py-2.5 col-span-2 sm:col-span-1">
+                <p className="text-xs text-muted-foreground">Exibindo agora</p>
+                <p className="text-xl font-semibold tabular-nums">{filteredRoomTypes.length}</p>
               </div>
             </div>
 
-              {/* Filters */}
-              <div className="flex items-center gap-4 px-6 pb-4 flex-shrink-0">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Buscar por nome, código ou descrição..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10 bg-background border-border"
-                  />
-                </div>
-                <div className="flex gap-2">
+            <div className="flex flex-col gap-3 px-5 py-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar por nome, código, propriedade…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-10 bg-background"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="flex gap-1.5 overflow-x-auto pb-1 flex-1 min-w-0 scrollbar-thin">
                   <Button
                     variant={selectedPropertyType === null ? "default" : "outline"}
                     size="sm"
                     onClick={() => setSelectedPropertyType(null)}
-                    className={selectedPropertyType === null ? "bg-primary" : ""}
+                    className="shrink-0 h-8"
                   >
                     Todos
+                    <Badge variant="secondary" className="ml-1.5 h-5 px-1.5 text-[10px]">
+                      {stats.total}
+                    </Badge>
                   </Button>
-                  {Object.entries(propertyTypeConfig).map(([key, config]) => (
-                    <Button
-                      key={key}
-                      variant={selectedPropertyType === key ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setSelectedPropertyType(key)}
-                      className={selectedPropertyType === key ? "bg-primary" : ""}
-                    >
-                      <config.icon className="h-4 w-4 mr-1" />
-                      {config.label}
+                  {Object.entries(propertyTypeConfig).map(([key, config]) => {
+                    const count = stats.byType[key] || 0;
+                    if (count === 0 && selectedPropertyType !== key) return null;
+                    return (
+                      <Button
+                        key={key}
+                        variant={selectedPropertyType === key ? "default" : "outline"}
+                        size="sm"
+                        onClick={() =>
+                          setSelectedPropertyType((prev) => (prev === key ? null : key))
+                        }
+                        className="shrink-0 h-8"
+                      >
+                        <config.icon className="h-3.5 w-3.5 mr-1" />
+                        {config.label}
+                        <Badge variant="secondary" className="ml-1.5 h-5 px-1.5 text-[10px]">
+                          {count}
+                        </Badge>
+                      </Button>
+                    );
+                  })}
+                </div>
+                {hasFilters && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearFilters}
+                    className="shrink-0 h-8 text-muted-foreground"
+                  >
+                    <X className="h-3.5 w-3.5 mr-1" />
+                    Limpar
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Catálogo com scroll */}
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4">
+            {isLoading ? (
+              <div className="flex flex-col items-center justify-center py-20">
+                <Loader2 className="h-9 w-9 animate-spin text-blue-500 mb-3" />
+                <p className="text-sm text-muted-foreground">Carregando tipos de quarto…</p>
+              </div>
+            ) : filteredRoomTypes.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <BedDouble className="h-14 w-14 text-muted-foreground/30 mb-3" />
+                <h3 className="text-base font-medium">Nenhum tipo encontrado</h3>
+                <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+                  {roomTypes.length === 0
+                    ? "Cadastre o primeiro tipo de quarto para começar."
+                    : "Ajuste a busca ou os filtros, ou cadastre um novo tipo."}
+                </p>
+                <div className="flex gap-2 mt-4">
+                  {hasFilters && (
+                    <Button variant="outline" onClick={clearFilters}>
+                      Limpar filtros
                     </Button>
-                  ))}
+                  )}
+                  <Button onClick={handleOpenNewRoomType}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Novo tipo
+                  </Button>
                 </div>
               </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 pb-2">
+                {filteredRoomTypes.map((roomType) => {
+                  const propConfig = propertyTypeConfig[roomType.propertyType];
+                  const PropIcon = propConfig?.icon || Hotel;
 
-              {/* Room Types Grid */}
-              <div className="flex-1 min-h-0 overflow-hidden px-6 pb-6">
-                <ScrollArea className="h-full">
-                  {isLoading ? (
-                    <div className="flex flex-col items-center justify-center py-16">
-                      <Loader2 className="h-10 w-10 animate-spin text-blue-500 mb-4" />
-                      <p className="text-muted-foreground">Carregando tipos de quarto...</p>
-                    </div>
-                  ) : (
-                  <>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6 pr-4">
-                  {filteredRoomTypes.map((roomType) => {
-                    const propConfig = propertyTypeConfig[roomType.propertyType];
-                    const PropIcon = propConfig?.icon || Hotel;
+                  return (
+                    <div
+                      key={roomType.id}
+                      className={`group rounded-xl border overflow-hidden bg-card transition-shadow hover:shadow-md ${
+                        roomType.isActive ? "border-border" : "border-border/50 opacity-80"
+                      }`}
+                    >
+                      <div className="relative h-32 overflow-hidden">
+                        <img
+                          src={roomType.image}
+                          alt={roomType.name}
+                          className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
 
-                    return (
-                      <div
-                        key={roomType.id}
-                        className={`group rounded-xl border overflow-hidden transition-all hover:shadow-lg ${
-                          roomType.isActive 
-                            ? "border-border bg-card" 
-                            : "border-border/50 bg-muted/30 opacity-75"
-                        }`}
-                      >
-                        {/* Image */}
-                        <div className="relative h-40 overflow-hidden">
-                          <img
-                            src={roomType.image}
-                            alt={roomType.name}
-                            className="w-full h-full object-cover transition-transform group-hover:scale-105"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
-                          
-                          {/* Top badges */}
-                          <div className="absolute top-3 left-3 flex gap-2">
-                            <Badge className={`bg-gradient-to-r ${propConfig?.color || "from-gray-500 to-gray-600"} text-white border-0`}>
-                              <PropIcon className="h-3 w-3 mr-1" />
-                              {propConfig?.label}
+                        <div className="absolute top-2 left-2 flex flex-wrap gap-1 max-w-[75%]">
+                          <Badge
+                            className={`bg-gradient-to-r ${propConfig?.color || "from-gray-500 to-gray-600"} text-white border-0 text-[10px]`}
+                          >
+                            <PropIcon className="h-3 w-3 mr-0.5" />
+                            {propConfig?.label}
+                          </Badge>
+                          {roomType.pricingModel === "per_person" ? (
+                            <Badge className="bg-blue-500/90 text-white border-0 text-[10px]">
+                              <UserCheck className="h-3 w-3 mr-0.5" />
+                              Por pessoa
                             </Badge>
-                            {roomType.pricingModel === "per_person" ? (
-                              <Badge className="bg-blue-500/90 text-white border-0">
-                                <UserCheck className="h-3 w-3 mr-1" />
-                                Por Pessoa
-                              </Badge>
-                            ) : (
-                              <Badge className="bg-emerald-500/90 text-white border-0">
-                                <DollarSign className="h-3 w-3 mr-1" />
-                                Por Unidade
-                              </Badge>
-                            )}
-                          </div>
-
-                          {/* Status badge */}
-                          <div className="absolute top-3 right-3">
-                            <Badge className={roomType.isActive ? "bg-emerald-500 text-white border-0" : "bg-gray-500 text-white border-0"}>
-                              {roomType.isActive ? "Ativo" : "Inativo"}
+                          ) : (
+                            <Badge className="bg-emerald-500/90 text-white border-0 text-[10px]">
+                              <DollarSign className="h-3 w-3 mr-0.5" />
+                              Por unidade
                             </Badge>
-                          </div>
-
-                          {/* Bottom info */}
-                          <div className="absolute bottom-3 left-3 right-3 flex justify-between items-end gap-2">
-                            <div className="min-w-0">
-                              <p className="text-white font-bold text-lg leading-tight">{roomType.name}</p>
-                              <p className="text-white/70 text-sm">Código: {roomType.code}</p>
-                              <p className="text-white/90 text-xs mt-1 flex items-center gap-1 truncate">
-                                <Building className="h-3 w-3 shrink-0 opacity-90" />
-                                <span className="truncate">
-                                  {roomType.propertyName || (roomType.propertyId ? `Propriedade #${roomType.propertyId}` : "Propriedade não informada")}
-                                </span>
-                              </p>
-                            </div>
-                            <div className="text-right shrink-0">
-                              <p className="text-white/70 text-xs">A partir de</p>
-                              <p className="text-white font-bold text-xl">
-                                {roomType.basePrice > 0 ? `R$ ${roomType.basePrice.toLocaleString("pt-BR")}` : "—"}
-                              </p>
-                            </div>
-                          </div>
+                          )}
                         </div>
 
-                        {/* Content */}
-                        <div className="p-4 space-y-3">
-                          <p className="text-sm text-muted-foreground line-clamp-2">
+                        <div className="absolute top-2 right-2">
+                          <Badge
+                            className={
+                              roomType.isActive
+                                ? "bg-emerald-500 text-white border-0 text-[10px]"
+                                : "bg-gray-500 text-white border-0 text-[10px]"
+                            }
+                          >
+                            {roomType.isActive ? "Ativo" : "Inativo"}
+                          </Badge>
+                        </div>
+
+                        <div className="absolute bottom-2 left-2 right-2 flex justify-between items-end gap-2">
+                          <div className="min-w-0">
+                            <p className="text-white font-semibold text-base leading-tight truncate">
+                              {roomType.name}
+                            </p>
+                            <p className="text-white/75 text-xs truncate">
+                              {roomType.code}
+                              {roomType.propertyName ? ` · ${roomType.propertyName}` : ""}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-white font-semibold text-sm">
+                              {roomType.basePrice > 0
+                                ? `R$ ${roomType.basePrice.toLocaleString("pt-BR")}`
+                                : "—"}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="p-3 space-y-2.5">
+                        {roomType.description ? (
+                          <p className="text-xs text-muted-foreground line-clamp-2">
                             {roomType.description}
                           </p>
+                        ) : null}
 
-                          {/* Details */}
-                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                            <div className="flex items-center gap-1">
-                              <Users className="h-4 w-4" />
-                              <span>Até {roomType.maxGuests}</span>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Maximize className="h-4 w-4" />
-                              <span>{roomType.size > 0 ? `${roomType.size}m²` : "—"}</span>
-                            </div>
-                            {roomType.roomCount > 0 && (
-                              <div className="flex items-center gap-1">
-                                <BedDouble className="h-4 w-4" />
-                                <span>{roomType.roomCount} quartos</span>
-                              </div>
-                            )}
-                          </div>
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                          <span className="inline-flex items-center gap-1">
+                            <Users className="h-3.5 w-3.5" />
+                            Até {roomType.maxGuests}
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <Maximize className="h-3.5 w-3.5" />
+                            {roomType.size > 0 ? `${roomType.size} m²` : "—"}
+                          </span>
+                        </div>
 
-                          {/* Amenities */}
+                        {(roomType.amenities?.length ?? 0) > 0 && (
                           <div className="flex flex-wrap gap-1">
                             {(roomType.amenities || []).slice(0, 5).map((amenity) => {
                               const AmenityIcon = amenityIcons[amenity];
                               return AmenityIcon ? (
                                 <div
                                   key={amenity}
-                                  className="p-1.5 rounded-lg bg-muted"
+                                  className="p-1 rounded-md bg-muted"
                                   title={amenity}
                                 >
-                                  <AmenityIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                                  <AmenityIcon className="h-3 w-3 text-muted-foreground" />
                                 </div>
                               ) : null;
                             })}
                             {(roomType.amenities?.length ?? 0) > 5 && (
-                              <div className="p-1.5 rounded-lg bg-muted text-xs text-muted-foreground">
+                              <div className="px-1.5 py-1 rounded-md bg-muted text-[10px] text-muted-foreground">
                                 +{(roomType.amenities?.length ?? 0) - 5}
                               </div>
                             )}
                           </div>
+                        )}
 
-                          {/* Actions */}
-                          <div className="flex items-center justify-between pt-2 border-t border-border">
-                            <div className="flex gap-2">
-                              <Button variant="outline" size="sm" onClick={() => handleEditRoomType(roomType)}>
-                                <Edit className="h-3.5 w-3.5 mr-1" />
-                                Editar
-                              </Button>
-                              <Button 
-                                variant="outline" 
-                                size="sm"
-                                onClick={() => handleViewRooms(roomType)}
-                              >
-                                <Eye className="h-3.5 w-3.5 mr-1" />
-                                Ver Quartos
-                              </Button>
-                            </div>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="sm">
-                                  <MoreVertical className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem>
-                                  <Copy className="h-4 w-4 mr-2" />
-                                  Duplicar
-                                </DropdownMenuItem>
-                                <DropdownMenuItem className="text-destructive">
-                                  <Trash2 className="h-4 w-4 mr-2" />
-                                  Excluir
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
+                        <div className="flex items-center justify-between gap-2 pt-2 border-t border-border">
+                          <div className="flex gap-1.5 min-w-0">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8"
+                              onClick={() => handleEditRoomType(roomType)}
+                            >
+                              <Edit className="h-3.5 w-3.5 mr-1" />
+                              Editar
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8"
+                              onClick={() => handleViewRooms(roomType)}
+                            >
+                              <Eye className="h-3.5 w-3.5 mr-1" />
+                              Quartos
+                            </Button>
                           </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-8 w-8 p-0 shrink-0">
+                                <MoreVertical className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem>
+                                <Copy className="h-4 w-4 mr-2" />
+                                Duplicar
+                              </DropdownMenuItem>
+                              <DropdownMenuItem className="text-destructive">
+                                <Trash2 className="h-4 w-4 mr-2" />
+                                Excluir
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
-
-                {filteredRoomTypes.length === 0 && !isLoading && (
-                  <div className="flex flex-col items-center justify-center py-12 text-center">
-                    <BedDouble className="h-16 w-16 text-muted-foreground/30 mb-4" />
-                    <h3 className="text-lg font-medium text-foreground">Nenhum tipo encontrado</h3>
-                    <p className="text-muted-foreground mt-1">
-                      {roomTypes.length === 0
-                        ? "Cadastre o primeiro tipo de quarto"
-                        : "Tente ajustar os filtros ou cadastre um novo tipo de quarto"}
-                    </p>
-                    <Button 
-                      onClick={handleOpenNewRoomType}
-                      className="mt-4"
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Novo Tipo de Quarto
-                    </Button>
-                  </div>
-                )}
-                  </>
-                  )}
-                </ScrollArea>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* New / Edit Room Type Modal */}
-      <RoomTypeModal 
+      <RoomTypeModal
         open={newRoomTypeModalOpen}
         editId={editingRoomTypeId}
         onOpenChange={(isOpen) => {
           setNewRoomTypeModalOpen(isOpen);
           if (!isOpen) {
             setEditingRoomTypeId(null);
-            loadRoomTypes();
+            void loadRoomTypes();
           }
-        }} 
+        }}
       />
 
-      {/* Rooms by Type Modal */}
-      <RoomsByTypeModal 
-        open={roomsByTypeModalOpen} 
+      <RoomsByTypeModal
+        open={roomsByTypeModalOpen}
         onOpenChange={setRoomsByTypeModalOpen}
         roomType={selectedRoomType}
       />

@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { OfflineIndicator } from "@/components/ui/offline-indicator";
 import { InstallPrompt } from "@/components/ui/install-prompt";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { SystemSettingsProvider } from "@/contexts/SystemSettingsContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute"; // Auth protection
 import { ScrollToTop } from "@/components/ScrollToTop";
 import Index from "./pages/Index";
@@ -126,6 +127,7 @@ function DashboardPDVGuard() {
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
+      <SystemSettingsProvider>
       <TooltipProvider>
         <Toaster />
         <Sonner />
@@ -271,6 +273,7 @@ const App = () => (
           </GuestAuthProvider>
         </BrowserRouter>
       </TooltipProvider>
+      </SystemSettingsProvider>
     </AuthProvider>
   </QueryClientProvider>
 );

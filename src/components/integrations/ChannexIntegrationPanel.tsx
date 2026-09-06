@@ -10,7 +10,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -211,14 +210,17 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
       }
       if (unitsRes.success && unitsRes.data?.units) {
         setUnits(
-          (unitsRes.data.units as any[]).map((u) => ({
-            id: Number(u.id),
-            number: String(u.number || ""),
-            name: u.name || null,
-            propertyName: u.property?.name,
-            propertyId: u.propertyId != null ? Number(u.propertyId) : undefined,
-            roomTypeId: u.roomTypeId != null ? Number(u.roomTypeId) : null,
-          })),
+          (unitsRes.data.units as any[])
+            // Só units com property ativa (evita lixo órfão no select)
+            .filter((u) => u.property?.id != null || u.property?.name)
+            .map((u) => ({
+              id: Number(u.id),
+              number: String(u.number || ""),
+              name: u.name || null,
+              propertyName: u.property?.name,
+              propertyId: u.propertyId != null ? Number(u.propertyId) : undefined,
+              roomTypeId: u.roomTypeId != null ? Number(u.roomTypeId) : null,
+            })),
         );
       }
       if (propsRes.success && propsRes.data?.properties) {
@@ -486,31 +488,56 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[92vh] p-0 gap-0 overflow-hidden">
-        <DialogHeader className="px-6 pt-6 pb-4 border-b">
-          <DialogTitle className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-600 to-emerald-500 flex items-center justify-center text-white font-bold text-sm">
+      <DialogContent className="max-w-5xl w-[min(96vw,64rem)] h-[min(92vh,880px)] p-0 gap-0 overflow-hidden flex flex-col border-border/60 shadow-2xl">
+        <DialogHeader className="relative shrink-0 px-6 pt-5 pb-4 border-b border-border/60 overflow-hidden text-left">
+          <div className="absolute inset-0 bg-gradient-to-br from-teal-600/15 via-emerald-500/5 to-transparent pointer-events-none" />
+          <div className="absolute -right-8 -top-10 h-36 w-36 rounded-full bg-teal-500/10 blur-2xl pointer-events-none" />
+          <DialogTitle className="relative flex items-start gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-teal-600 to-emerald-500 flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-teal-600/25 shrink-0">
               CX
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                Painel Channex
+            <div className="min-w-0 space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-lg font-semibold tracking-tight">Painel Channex</span>
                 {connection ? (
-                  <Badge variant="outline" className="text-xs gap-1">
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-xs gap-1",
+                      isConnected
+                        ? "border-emerald-500/40 text-emerald-700 bg-emerald-500/10"
+                        : "border-amber-500/40 text-amber-800 bg-amber-500/10",
+                    )}
+                  >
                     {isConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
                     {isConnected ? "Conectado" : connection.status}
                   </Badge>
                 ) : (
                   <Badge variant="outline" className="text-xs">Não conectado</Badge>
                 )}
+                {connection && (
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-xs",
+                      (connection.settings?.environment || environment) === "production"
+                        ? "border-emerald-600/40 text-emerald-700"
+                        : "border-amber-600/40 text-amber-800",
+                    )}
+                  >
+                    {(connection.settings?.environment || environment) === "production"
+                      ? "Produção"
+                      : "Staging"}
+                  </Badge>
+                )}
               </div>
-              <p className="text-sm font-normal text-muted-foreground">
+              <p className="text-sm font-normal text-muted-foreground leading-snug">
                 Channel Manager PMS — Booking.com, Airbnb, Expedia e outros via{" "}
                 <a
                   href="https://docs.channex.io/"
                   target="_blank"
                   rel="noreferrer"
-                  className="underline inline-flex items-center gap-0.5"
+                  className="underline underline-offset-2 inline-flex items-center gap-0.5 text-teal-700 hover:text-teal-800"
                 >
                   Channex.io
                   <ExternalLink className="w-3 h-3" />
@@ -521,115 +548,181 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
         </DialogHeader>
 
         {loading ? (
-          <div className="py-20 flex justify-center">
+          <div className="flex-1 flex items-center justify-center py-24">
             <Loader2 className="w-8 h-8 animate-spin text-teal-600" />
           </div>
         ) : (
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <div className="px-6 pt-3">
-              <TabsList className="flex flex-wrap h-auto gap-1">
-                <TabsTrigger value="connection" className="gap-1.5">
+          <Tabs
+            value={activeTab}
+            onValueChange={setActiveTab}
+            className="flex flex-col flex-1 min-h-0 overflow-hidden"
+          >
+            <div className="shrink-0 px-6 pt-3 pb-3 border-b border-border/50 bg-muted/20">
+              <TabsList className="w-full h-auto grid grid-cols-2 sm:grid-cols-4 gap-1 bg-muted/60 p-1 rounded-xl">
+                <TabsTrigger value="connection" className="gap-1.5 rounded-lg data-[state=active]:bg-background data-[state=active]:shadow-sm">
                   <KeyRound className="w-3.5 h-3.5" />
                   Conexão
                 </TabsTrigger>
-                <TabsTrigger value="provision" disabled={!connection} className="gap-1.5">
+                <TabsTrigger value="provision" disabled={!connection} className="gap-1.5 rounded-lg data-[state=active]:bg-background data-[state=active]:shadow-sm">
                   <Rocket className="w-3.5 h-3.5" />
                   Provisionar
                 </TabsTrigger>
-                <TabsTrigger value="inventory" disabled={!connection} className="gap-1.5">
+                <TabsTrigger value="inventory" disabled={!connection} className="gap-1.5 rounded-lg data-[state=active]:bg-background data-[state=active]:shadow-sm">
                   <Building2 className="w-3.5 h-3.5" />
                   Room Types
                 </TabsTrigger>
-                <TabsTrigger value="modules" disabled={!connection} className="gap-1.5">
+                <TabsTrigger value="modules" disabled={!connection} className="gap-1.5 rounded-lg data-[state=active]:bg-background data-[state=active]:shadow-sm">
                   <Shield className="w-3.5 h-3.5" />
                   Módulos
                 </TabsTrigger>
               </TabsList>
             </div>
 
-            <ScrollArea className="max-h-[62vh] px-6 py-4">
-              <TabsContent value="connection" className="mt-0 space-y-4">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-5 [scrollbar-gutter:stable]">
+              <TabsContent value="connection" className="mt-0 space-y-4 focus-visible:outline-none">
                 {connection && isConnected && (
-                  <Card className="border-emerald-500/30 bg-emerald-500/5">
-                    <CardContent className="p-5 space-y-3">
+                  <Card className="border-emerald-500/25 bg-gradient-to-br from-emerald-500/10 via-background to-background overflow-hidden">
+                    <CardContent className="p-5 space-y-4">
                       <div className="flex items-start gap-3">
-                        <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
-                        <div>
+                        <div className="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                        </div>
+                        <div className="min-w-0 flex-1">
                           <p className="font-semibold">Channex conectada</p>
-                          <p className="text-sm text-muted-foreground">
-                            {connection.name} · ambiente{" "}
-                            {String(connection.settings?.environment || environment)}
-                          </p>
+                          <p className="text-sm text-muted-foreground truncate">{connection.name}</p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <Badge
+                              variant="outline"
+                              className={
+                                (connection.settings?.environment || environment) === "production"
+                                  ? "border-emerald-600 text-emerald-700 bg-emerald-500/10"
+                                  : "border-amber-600 text-amber-800 bg-amber-500/10"
+                              }
+                            >
+                              Ambiente:{" "}
+                              {(connection.settings?.environment || environment) === "production"
+                                ? "Produção (app.channex.io)"
+                                : "Staging (staging.channex.io)"}
+                            </Badge>
+                          </div>
                         </div>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" size="sm" onClick={() => setActiveTab("provision")}>
-                          Provisionar property
-                        </Button>
-                        <Button variant="outline" size="sm" onClick={() => setActiveTab("inventory")}>
-                          Mapear room types
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="gap-1"
-                          disabled={pulling}
-                          onClick={() => void handlePullBookings()}
-                        >
-                          {pulling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                          Puxar reservas
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="gap-1"
-                          disabled={syncingAvail}
-                          onClick={() => void handleSyncAvailability()}
-                        >
-                          {syncingAvail ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                          Sync disponibilidade
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="gap-1"
-                          disabled={syncingRates}
-                          onClick={() => void handleSyncRates()}
-                        >
-                          {syncingRates ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <DollarSign className="w-3.5 h-3.5" />}
-                          Sync rates
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="gap-1"
-                          disabled={doctoring}
-                          onClick={() => void handleDoctor()}
-                        >
-                          {doctoring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Shield className="w-3.5 h-3.5" />}
-                          Doctor
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="gap-1"
-                          disabled={pulling}
-                          onClick={() => void handleRecover()}
-                        >
-                          Recovery bookings
-                        </Button>
-                        <Button variant="outline" size="sm" onClick={() => setShowTokenForm((v) => !v)}>
-                          Atualizar API Key
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-rose-600"
-                          onClick={() => void handleDisconnect()}
-                        >
-                          <Trash2 className="w-3.5 h-3.5 mr-1" />
-                          Desconectar
-                        </Button>
+
+                      <Card className="border-dashed bg-background/70 shadow-none">
+                        <CardContent className="p-4 space-y-3">
+                          <div>
+                            <p className="text-sm font-medium">Trocar para produção</p>
+                            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                              Clique em <strong>Ir para Produção</strong>, escolha{" "}
+                              <strong>Produção</strong>, cole a API Key de{" "}
+                              <a
+                                href="https://app.channex.io/"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="underline text-teal-700"
+                              >
+                                app.channex.io
+                              </a>{" "}
+                              e salve. A key de staging não funciona em produção.
+                            </p>
+                          </div>
+                          <Button
+                            variant="default"
+                            size="sm"
+                            className="gap-1.5 bg-teal-600 hover:bg-teal-700 text-white"
+                            onClick={() => {
+                              setEnvironment("production");
+                              setShowTokenForm(true);
+                            }}
+                          >
+                            <KeyRound className="w-3.5 h-3.5" />
+                            Ir para Produção
+                          </Button>
+                        </CardContent>
+                      </Card>
+
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Ações rápidas
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                          <Button variant="outline" size="sm" className="justify-start h-9" onClick={() => setActiveTab("provision")}>
+                            <Rocket className="w-3.5 h-3.5 mr-1.5 shrink-0" />
+                            Provisionar
+                          </Button>
+                          <Button variant="outline" size="sm" className="justify-start h-9" onClick={() => setActiveTab("inventory")}>
+                            <Building2 className="w-3.5 h-3.5 mr-1.5 shrink-0" />
+                            Room types
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="justify-start h-9"
+                            disabled={pulling}
+                            onClick={() => void handlePullBookings()}
+                          >
+                            {pulling ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-1.5" />}
+                            Puxar reservas
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="justify-start h-9"
+                            disabled={syncingAvail}
+                            onClick={() => void handleSyncAvailability()}
+                          >
+                            {syncingAvail ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Upload className="w-3.5 h-3.5 mr-1.5" />}
+                            Sync disponib.
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="justify-start h-9"
+                            disabled={syncingRates}
+                            onClick={() => void handleSyncRates()}
+                          >
+                            {syncingRates ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <DollarSign className="w-3.5 h-3.5 mr-1.5" />}
+                            Sync rates
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="justify-start h-9"
+                            disabled={doctoring}
+                            onClick={() => void handleDoctor()}
+                          >
+                            {doctoring ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Shield className="w-3.5 h-3.5 mr-1.5" />}
+                            Doctor
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="justify-start h-9"
+                            disabled={pulling}
+                            onClick={() => void handleRecover()}
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                            Recovery
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="justify-start h-9"
+                            onClick={() => setShowTokenForm((v) => !v)}
+                          >
+                            <KeyRound className="w-3.5 h-3.5 mr-1.5" />
+                            {showTokenForm ? "Fechar form" : "Ambiente / Key"}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="justify-start h-9 text-rose-600 hover:text-rose-700 col-span-2 sm:col-span-1"
+                            onClick={() => void handleDisconnect()}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                            Desconectar
+                          </Button>
+                        </div>
                       </div>
                       {connection.lastError && (
                         <div className="text-sm text-rose-700 flex gap-2">
@@ -662,22 +755,35 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                   <div className="space-y-4">
                     <Card className="border-teal-500/20 bg-teal-500/5">
                       <CardContent className="p-4 text-sm text-muted-foreground space-y-2">
+                        <p className="font-medium text-foreground">Configurar conexão Channex</p>
                         <p>
-                          1. Crie conta no{" "}
+                          1. Conta{" "}
                           <a
                             href="https://staging.channex.io/"
                             target="_blank"
                             rel="noreferrer"
                             className="underline text-teal-700"
                           >
-                            staging Channex
+                            staging
                           </a>{" "}
-                          (ou produção).
+                          ou{" "}
+                          <a
+                            href="https://app.channex.io/"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline text-teal-700"
+                          >
+                            produção (app.channex.io)
+                          </a>
+                          .
                         </p>
-                        <p>2. Gere uma API Key no perfil do usuário.</p>
+                        <p>2. Gere uma API Key no perfil do usuário (use a key do mesmo ambiente).</p>
                         <p>
-                          3. Defina <code className="text-xs">API_PUBLIC_URL</code> no backend
-                          (HTTPS público) para webhooks.
+                          3. Escolha o <strong>Ambiente</strong> abaixo e cole a key.
+                        </p>
+                        <p>
+                          4. Em produção, defina <code className="text-xs">API_PUBLIC_URL</code> no
+                          backend (HTTPS público) para webhooks.
                         </p>
                       </CardContent>
                     </Card>
@@ -687,7 +793,7 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                       <Input value={name} onChange={(e) => setName(e.target.value)} />
                     </div>
                     <div className="space-y-2">
-                      <Label>Ambiente</Label>
+                      <Label>Ambiente *</Label>
                       <Select
                         value={environment}
                         onValueChange={(v) => setEnvironment(v as "staging" | "production")}
@@ -696,18 +802,27 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="staging">Staging (staging.channex.io)</SelectItem>
-                          <SelectItem value="production">Produção (app.channex.io)</SelectItem>
+                          <SelectItem value="staging">Staging — staging.channex.io</SelectItem>
+                          <SelectItem value="production">Produção — app.channex.io</SelectItem>
                         </SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {environment === "production"
+                          ? "Usará a API https://app.channex.io/api/v1 (OTA reais)."
+                          : "Usará a API https://staging.channex.io/api/v1 (somente testes)."}
+                      </p>
                     </div>
                     <div className="space-y-2">
-                      <Label>API Key</Label>
+                      <Label>API Key *</Label>
                       <Input
                         type="password"
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
-                        placeholder="Cole a user-api-key"
+                        placeholder={
+                          environment === "production"
+                            ? "Cole a user-api-key de produção"
+                            : "Cole a user-api-key de staging"
+                        }
                         autoComplete="off"
                       />
                     </div>
@@ -717,13 +832,17 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                       className="gap-2 bg-gradient-to-r from-teal-600 to-emerald-500 text-white"
                     >
                       {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plug className="w-4 h-4" />}
-                      {connection ? "Salvar API Key" : "Conectar Channex"}
+                      {connection
+                        ? environment === "production"
+                          ? "Salvar e ir para Produção"
+                          : "Salvar ambiente / API Key"
+                        : "Conectar Channex"}
                     </Button>
                   </div>
                 )}
               </TabsContent>
 
-              <TabsContent value="provision" className="mt-0 space-y-4">
+              <TabsContent value="provision" className="mt-0 space-y-4 focus-visible:outline-none pb-2">
                 <div>
                   <h4 className="font-medium">Criar inventário na Channex via API</h4>
                   <p className="text-sm text-muted-foreground">
@@ -760,36 +879,38 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                 </Button>
               </TabsContent>
 
-              <TabsContent value="inventory" className="mt-0 space-y-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h4 className="font-medium">Room Types ↔ Units (inventário compartilhado)</h4>
-                    <p className="text-sm text-muted-foreground">
-                      Várias units no mesmo room type = hotel (ex.: 14 quartos Standard). Contagem
-                      livre é enviada à Channex. VR/apto: 1 unit por room type.
+              <TabsContent value="inventory" className="mt-0 space-y-4 focus-visible:outline-none pb-2">
+                <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-4">
+                  <div className="min-w-0">
+                    <h4 className="font-medium">Room Types ↔ Units</h4>
+                    <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                      Inventário compartilhado: várias units no mesmo room type = hotel.
+                      VR/apto: 1 unit por room type.
                     </p>
                   </div>
                   <Button
                     variant="outline"
-                    size="sm"
+                    size="icon"
+                    className="shrink-0"
                     disabled={loadingInventory || !connection}
                     onClick={() => connection && void loadInventory(connection.id)}
                   >
                     {loadingInventory ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
-                      <RefreshCw className="w-3.5 h-3.5" />
+                      <RefreshCw className="w-4 h-4" />
                     )}
                   </Button>
                 </div>
 
                 {loadingInventory ? (
-                  <div className="py-12 flex justify-center">
+                  <div className="py-16 flex justify-center">
                     <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
                   </div>
                 ) : roomTypes.length === 0 ? (
-                  <Card>
-                    <CardContent className="p-8 text-center text-sm text-muted-foreground space-y-3">
+                  <Card className="border-dashed">
+                    <CardContent className="p-10 text-center text-sm text-muted-foreground space-y-3">
+                      <Building2 className="w-10 h-10 mx-auto text-muted-foreground/40" />
                       <p>Nenhum room type na Channex.</p>
                       <Button variant="outline" size="sm" onClick={() => setActiveTab("provision")}>
                         Provisionar a partir do Unistays
@@ -797,27 +918,33 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                     </CardContent>
                   </Card>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {roomTypes.map((rt) => {
                       const linked = mappingsByExternal.get(rt.externalId) || [];
                       const savingRow = savingMapId === rt.externalId;
                       const availableUnits = units.filter((u) => !mappedUnitIds.has(u.id));
                       return (
-                        <Card key={rt.externalId}>
-                          <CardContent className="p-3 space-y-3">
+                        <Card
+                          key={rt.externalId}
+                          className="border-border/70 shadow-sm hover:border-teal-500/30 transition-colors"
+                        >
+                          <CardContent className="p-4 space-y-3">
                             <div className="flex flex-col sm:flex-row sm:items-start gap-3">
                               <div className="flex-1 min-w-0">
-                                <p className="font-medium truncate">{rt.title}</p>
-                                <p className="text-xs text-muted-foreground">
+                                <p className="font-semibold truncate">{rt.title}</p>
+                                <p className="text-xs text-muted-foreground mt-0.5">
                                   qty Channex {rt.countOfRooms} · mapeadas {linked.length} ·{" "}
-                                  {rt.externalId.slice(0, 8)}…
+                                  <span className="font-mono">{rt.externalId.slice(0, 8)}…</span>
                                 </p>
                               </div>
                               {linked.length > 0 && (
                                 <Badge
                                   variant="outline"
                                   className={cn(
-                                    linked.length > 1 ? "text-teal-700" : "text-emerald-700",
+                                    "shrink-0",
+                                    linked.length > 1
+                                      ? "text-teal-700 border-teal-500/30 bg-teal-500/5"
+                                      : "text-emerald-700 border-emerald-500/30 bg-emerald-500/5",
                                   )}
                                 >
                                   <Link2 className="w-3 h-3 mr-1" />
@@ -834,16 +961,18 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                                     <Badge
                                       key={m.id}
                                       variant="secondary"
-                                      className="gap-1 pr-1 font-normal"
+                                      className="gap-1.5 pr-1 font-normal max-w-full"
                                     >
-                                      {u
-                                        ? [u.propertyName, u.name || `Unit ${u.number}`]
-                                            .filter(Boolean)
-                                            .join(" · ")
-                                        : `Unit #${m.localId}`}
+                                      <span className="truncate">
+                                        {u
+                                          ? [u.propertyName, u.name || `Unit ${u.number}`]
+                                              .filter(Boolean)
+                                              .join(" · ")
+                                          : `Unit #${m.localId}`}
+                                      </span>
                                       <button
                                         type="button"
-                                        className="ml-1 rounded p-0.5 hover:bg-rose-100 text-rose-600"
+                                        className="ml-0.5 rounded-full p-1 hover:bg-rose-100 text-rose-600 shrink-0"
                                         disabled={savingRow}
                                         onClick={() => void handleRemoveUnitMapping(m)}
                                         aria-label="Remover vínculo"
@@ -861,7 +990,7 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                               onValueChange={(v) => void handleAddUnitToRoomType(rt, v)}
                               disabled={savingRow || availableUnits.length === 0}
                             >
-                              <SelectTrigger className="sm:w-[280px]">
+                              <SelectTrigger className="w-full sm:max-w-sm bg-muted/30">
                                 <SelectValue placeholder="Adicionar unit…" />
                               </SelectTrigger>
                               <SelectContent>
@@ -887,8 +1016,8 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                 )}
               </TabsContent>
 
-              <TabsContent value="modules" className="mt-0 space-y-3">
-                <p className="text-sm text-muted-foreground">
+              <TabsContent value="modules" className="mt-0 space-y-3 focus-visible:outline-none pb-2">
+                <p className="text-sm text-muted-foreground leading-relaxed">
                   Fluxo oficial Channex: ARI OUT (availability + rates/restrictions) e Booking
                   Revisions Feed IN com ACK. Webhook só notifica — o Unistays puxa o feed.
                 </p>
@@ -950,9 +1079,11 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                     {webhookIsLocal && (
                       <div className="text-sm text-amber-800 flex gap-2">
                         <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                        URL local — a Channex não alcança. Defina{" "}
-                        <code className="text-xs">API_PUBLIC_URL</code> com HTTPS público (ngrok /
-                        cloudflared / produção) e registre o webhook de novo.
+                        <span>
+                          URL local — a Channex não alcança. Defina{" "}
+                          <code className="text-xs">API_PUBLIC_URL</code> com HTTPS público (ngrok /
+                          cloudflared / produção) e registre o webhook de novo.
+                        </span>
                       </div>
                     )}
                     <div className="flex gap-2">
@@ -986,7 +1117,7 @@ export function ChannexIntegrationPanel({ open, onOpenChange, onConnectionChange
                   </CardContent>
                 </Card>
               </TabsContent>
-            </ScrollArea>
+            </div>
           </Tabs>
         )}
       </DialogContent>

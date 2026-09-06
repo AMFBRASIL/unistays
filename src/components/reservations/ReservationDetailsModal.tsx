@@ -49,6 +49,7 @@ import { ReservationSummaryModal } from "./ReservationSummaryModal";
 import { SendReservationChannelsModal } from "./SendReservationChannelsModal";
 import { CompletePaymentModal } from "./CompletePaymentModal";
 import { ChannelManagerFlowModal } from "./ChannelManagerFlowModal";
+import { printHtmlDocument } from "@/lib/printHtml";
 import { toast } from "sonner";
 
 interface ReservationDetailsModalProps {
@@ -113,19 +114,10 @@ export function ReservationDetailsModal({ reservationId, open, onOpenChange, onE
                 return;
             }
 
-            const printWindow = window.open("", "_blank", "width=1024,height=768");
-            if (!printWindow) {
-                toast.error("Pop-up bloqueado. Permita pop-ups para imprimir o contrato.");
-                return;
+            const printed = printHtmlDocument(response.data.html);
+            if (!printed) {
+                toast.error("Não foi possível abrir a visualização de impressão.");
             }
-
-            printWindow.document.open();
-            printWindow.document.write(response.data.html);
-            printWindow.document.close();
-            printWindow.focus();
-            setTimeout(() => {
-                printWindow.print();
-            }, 300);
         } catch (error) {
             console.error(error);
             toast.error("Erro ao imprimir contrato da reserva.");

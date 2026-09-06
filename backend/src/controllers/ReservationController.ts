@@ -8,16 +8,158 @@ import { AuthRequest } from '@/middlewares/auth.middleware';
 import { AppError } from '@/middlewares/error.middleware';
 import { v4 as uuidv4 } from 'uuid';
 import { EmailService } from '@/services/EmailService';
+import { normalizeStayDate, formatStayDate, type DateLocaleConfig } from '@/utils/dateOnly';
+import { GeneralSettingsService } from '@/services/GeneralSettingsService';
+import { DEFAULT_RESERVATION_CONTRACT_TEMPLATE } from '@/templates/reservationContractTemplate';
+import { prepareContractHtmlForPrint } from '@/utils/contractPrint';
+import { formatCurrencyInWordsPtBr, numberToWordsPtBr } from '@/utils/numberToWordsPtBr';
+import type { SystemLocaleConfig } from '@/services/GeneralSettingsService';
 
 export class ReservationController {
-  private formatDateBR(value?: Date | string | null): string {
-    if (!value) return '';
-    const date = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleDateString('pt-BR');
+  private formatDateBR(value?: Date | string | null, locale?: SystemLocaleConfig): string {
+    return formatStayDate(value, locale);
   }
 
-  private applyContractVariables(template: string, reservation: Reservation): string {
+  private formatTimeForContract(
+    time: string | null | undefined,
+    locale?: SystemLocaleConfig,
+    fallback = '14:00',
+  ): string {
+    const raw = (time || fallback).trim();
+    const match = raw.match(/^(\d{1,2}):(\d{2})/);
+    if (!match) return raw;
+
+    const hours = Number(match[1]);
+    const minutes = match[2];
+
+    if (locale?.timeFormat === '12h') {
+      const period = hours >= 12 ? 'PM' : 'AM';
+      const h12 = hours % 12 || 12;
+      return `${h12}:${minutes} ${period}`;
+    }
+
+    return `${String(hours).padStart(2, '0')}h${minutes}`;
+  }
+
+  private async getDefaultPropertyBankAccount(propertyId?: number | null): Promise<{
+    bankName: string;
+    accountHolder: string;
+    holderDocument: string | null;
+    branch: string | null;
+    accountNumber: string;
+    accountDigit: string | null;
+    pixKeyType: string | null;
+    pixKey: string | null;
+  } | null> {
+    if (!propertyId) return null;
+
+    try {
+      const rows = await AppDataSource.query(
+        `SELECT
+          bank_name AS bankName,
+          account_holder AS accountHolder,
+          holder_document AS holderDocument,
+          branch,
+          account_number AS accountNumber,
+          account_digit AS accountDigit,
+          pix_key_type AS pixKeyType,
+          pix_key AS pixKey
+         FROM property_bank_accounts
+         WHERE property_id = ?
+           AND deleted_at IS NULL
+           AND is_active = 1
+         ORDER BY is_default DESC, updated_at DESC, id ASC
+         LIMIT 1`,
+        [propertyId],
+      );
+      return rows?.[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private formatPixPaymentDetails(
+    bankAccount: {
+      bankName: string;
+      accountHolder: string;
+      holderDocument: string | null;
+      branch: string | null;
+      accountNumber: string;
+      accountDigit: string | null;
+      pixKeyType: string | null;
+      pixKey: string | null;
+    } | null,
+  ): string {
+    if (!bankAccount) {
+      return 'Consulte a administração para os dados de pagamento.';
+    }
+
+    const pixTypeLabels: Record<string, string> = {
+      cpf: 'cpf',
+      cnpj: 'cnpj',
+      email: 'e-mail',
+      phone: 'telefone',
+      random: 'aleatória',
+    };
+
+    const lines: string[] = [];
+    if (bankAccount.pixKey) {
+      const typeLabel = pixTypeLabels[String(bankAccount.pixKeyType || '').toLowerCase()] || 'pix';
+      lines.push(`Chave PIX (${typeLabel}): ${bankAccount.pixKey}`);
+    }
+    if (bankAccount.bankName) lines.push(`Banco: ${bankAccount.bankName}`);
+    if (bankAccount.accountHolder) lines.push(`Titular: ${bankAccount.accountHolder}`);
+    if (bankAccount.holderDocument) lines.push(`CPF/CNPJ: ${bankAccount.holderDocument}`);
+    if (bankAccount.branch || bankAccount.accountNumber) {
+      const account = [bankAccount.accountNumber, bankAccount.accountDigit].filter(Boolean).join('-');
+      const agencyPart = bankAccount.branch ? `Agência ${bankAccount.branch}` : '';
+      const accountPart = account ? `Conta ${account}` : '';
+      lines.push([agencyPart, accountPart].filter(Boolean).join(' · '));
+    }
+
+    return lines.length > 0 ? lines.join('<br>') : 'Consulte a administração para os dados de pagamento.';
+  }
+
+  private buildGuestFullAddress(guest: Guest | null | undefined): string {
+    if (!guest) return '';
+    const parts: string[] = [];
+    if (guest.address) {
+      let line = guest.address;
+      if (guest.addressNumber) line += `, nº ${guest.addressNumber}`;
+      parts.push(line);
+    }
+    if (guest.addressNeighborhood) parts.push(guest.addressNeighborhood);
+    if (guest.city || guest.state) {
+      parts.push([guest.city, guest.state].filter(Boolean).join('/'));
+    }
+    if (guest.zipCode) parts.push(`CEP ${guest.zipCode}`);
+    return parts.join(', ');
+  }
+
+  private applyContractVariables(
+    template: string,
+    reservation: Reservation,
+    locale?: SystemLocaleConfig,
+    companyInfo?: {
+      name?: string | null;
+      legalName?: string | null;
+      address?: string | null;
+      phone?: string | null;
+      email?: string | null;
+      taxId?: string | null;
+      cnpj?: string | null;
+    },
+    bankAccount?: {
+      bankName: string;
+      accountHolder: string;
+      holderDocument: string | null;
+      branch: string | null;
+      accountNumber: string;
+      accountDigit: string | null;
+      pixKeyType: string | null;
+      pixKey: string | null;
+    } | null,
+  ): string {
     const guestFullName = reservation.guest
       ? [reservation.guest.firstName, reservation.guest.lastName].filter(Boolean).join(' ').trim()
       : '';
@@ -31,67 +173,97 @@ export class ReservationController {
       roomTypeName ||
       unitNumber ||
       '';
+    const unidadeDescricao = [unitNumber, roomTypeName].filter(Boolean).join(' - ');
+    const capacity = unit?.capacity ?? (reservation.adults || 0) + (reservation.children || 0);
+    const guest = reservation.guest;
+    const guestRg =
+      guest?.documentType === 'rg' ? guest.documentNumber || '' : '';
+    const locadorNome =
+      companyInfo?.legalName || companyInfo?.name || reservation.property?.name || 'Unistays';
+    const locadorDocumento =
+      companyInfo?.taxId || companyInfo?.cnpj || reservation.property?.taxId || '';
+    const locadorEndereco = companyInfo?.address || reservation.property?.address || '';
+    const locadorEmail = companyInfo?.email || reservation.property?.email || '';
+    const imovelCidadeUf =
+      reservation.property?.city && reservation.property?.state
+        ? `${reservation.property.city}/${reservation.property.state}`
+        : [reservation.property?.city, reservation.property?.state].filter(Boolean).join('/') || '';
+    const depositAmount = Number(reservation.depositAmount || 0);
     const money = (n: number) =>
       Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
     const variables: Record<string, string> = {
-      hotel_nome: reservation.property?.name || 'Unistays',
+      hotel_nome: (reservation.property?.name || 'Unistays').toUpperCase(),
       hotel_nome_fantasia: reservation.property?.name || 'Unistays',
-      hospede_nome: guestFullName || reservation.guest?.name || '',
-      hospede_documento: reservation.guest?.documentNumber || '',
-      hospede_rg: '',
-      hospede_endereco: reservation.guest?.address || '',
-      hospede_telefone: reservation.guest?.phone || '',
-      hospede_email: reservation.guest?.email || '',
-      hospede_nacionalidade: reservation.guest?.nationality || '',
-      hospede_cidade: reservation.guest?.city || '',
-      hospede_estado: reservation.guest?.state || '',
-      contratada_nome: reservation.property?.name || 'Unistays',
-      contratada_documento: reservation.property?.taxId || '',
+      locador_nome: locadorNome,
+      locador_documento: locadorDocumento,
+      locador_endereco: locadorEndereco,
+      locador_email: locadorEmail,
+      hospede_nome: guestFullName || guest?.name || '',
+      hospede_documento: guest?.documentNumber || '',
+      hospede_rg: guestRg,
+      hospede_endereco: guest?.address || '',
+      hospede_endereco_completo: this.buildGuestFullAddress(guest),
+      hospede_telefone: guest?.phone || '',
+      hospede_email: guest?.email || '',
+      hospede_nacionalidade: guest?.nationality || '',
+      hospede_cidade: guest?.city || '',
+      hospede_estado: guest?.state || '',
+      contratada_nome: locadorNome,
+      contratada_documento: locadorDocumento,
       imovel_endereco: reservation.property?.address || '',
-      propriedade_telefone: reservation.property?.phone || '',
-      propriedade_email: reservation.property?.email || '',
+      imovel_cidade_uf: imovelCidadeUf,
+      propriedade_telefone: reservation.property?.phone || companyInfo?.phone || '',
+      propriedade_email: reservation.property?.email || companyInfo?.email || '',
       propriedade_website: reservation.property?.website || '',
       propriedade_cep: reservation.property?.zipCode || '',
       propriedade_bairro: reservation.property?.neighborhood || '',
-      reserva_codigo: reservation.reservationNumber || '',
+      reserva_codigo: reservation.reservationNumber || String(reservation.id || ''),
       confirmacao_codigo: reservation.confirmationCode || '',
-      checkin_data: this.formatDateBR(reservation.checkIn),
-      checkout_data: this.formatDateBR(reservation.checkOut),
-      checkin_hora: reservation.checkInTime || '14:00',
-      checkout_hora: reservation.checkOutTime || '12:00',
+      checkin_data: this.formatDateBR(reservation.checkIn, locale),
+      checkout_data: this.formatDateBR(reservation.checkOut, locale),
+      checkin_hora: this.formatTimeForContract(reservation.checkInTime, locale, '14:00'),
+      checkout_hora: this.formatTimeForContract(reservation.checkOutTime, locale, '12:00'),
       noites: String(reservation.nights ?? ''),
       status_reserva: reservation.status || '',
       hospedes_quantidade: String((reservation.adults || 0) + (reservation.children || 0)),
       hospedes_adultos: String(reservation.adults || 0),
       hospedes_criancas: String(reservation.children || 0),
+      hospedes_capacidade_max: String(capacity || ''),
+      hospedes_capacidade_extenso: capacity ? numberToWordsPtBr(capacity).toUpperCase() : '',
       quarto_nome: quartoNome,
+      unidade_descricao: unidadeDescricao,
       tipo_quarto: roomTypeName,
       unidade_numero: unitNumber,
       unidade_andar: unit?.floor != null ? String(unit.floor) : '',
       unidade_capacidade: unit?.capacity != null ? String(unit.capacity) : '',
       plano_tarifa: reservation.ratePlan?.name || '',
       valor_total: money(totalAmount),
+      valor_total_extenso: formatCurrencyInWordsPtBr(totalAmount),
       valor_diaria: money(Number(reservation.baseRate || 0)),
       valor_desconto: money(Number(reservation.discount || 0)),
       valor_taxas: money(Number(reservation.taxes || 0)),
       valor_taxas_servico: money(Number(reservation.fees || 0)),
-      valor_sinal: money(Number(reservation.depositAmount || 0)),
+      valor_sinal: money(depositAmount),
       valor_saldo: money(Math.max(0, totalAmount - paidAmount)),
+      valor_hospede_excedente: money(200),
+      dados_pagamento_pix: this.formatPixPaymentDetails(bankAccount ?? null),
       forma_pagamento: reservation.paymentMethod || '',
-      /** Caução: quando não houver campo específico, reutiliza depósito/sinal cadastrado na reserva */
-      valor_caucao: money(Number(reservation.depositAmount || 0)),
+      valor_caucao: money(depositAmount),
       observacoes_reserva: reservation.specialRequests || '',
-      politica_pets: reservation.petDetails ? `Permitido. ${reservation.petDetails}` : 'Nao permitir animais de estimacao, salvo autorizacao previa por escrito.',
+      politica_pets: reservation.petDetails
+        ? `Permitido. ${reservation.petDetails}`
+        : 'Quando admitidos na reserva, animais deverão permanecer sob responsabilidade de seus tutores.',
       cancelamento_prazo_dias: '7',
       cancelamento_percentual_reembolso: '70',
       cancelamento_percentual_multa: '50',
       caucao_prazo_devolucao_dias: '5',
-      foro_cidade_uf: reservation.property?.city && reservation.property?.state
-        ? `${reservation.property.city}/${reservation.property.state}`
-        : 'Cidade/UF',
-      cidade_assinatura: reservation.property?.city || 'Cidade',
-      data_assinatura: this.formatDateBR(new Date()),
+      foro_cidade_uf:
+        reservation.property?.city && reservation.property?.state
+          ? `${reservation.property.city}/${reservation.property.state}`
+          : 'Cidade/UF',
+      cidade_assinatura: reservation.property?.city || guest?.city || 'Cidade',
+      data_assinatura: this.formatDateBR(new Date(), locale),
       testemunha1_nome: '',
       testemunha1_documento: '',
       testemunha2_nome: '',
@@ -281,6 +453,15 @@ export class ReservationController {
         channelId: req.body.channelId || null,
       };
 
+      if (dataToSave.checkIn) {
+        const locale = await GeneralSettingsService.getLocaleConfig(dataToSave.propertyId ?? null);
+        dataToSave.checkIn = normalizeStayDate(dataToSave.checkIn, locale);
+        if (dataToSave.checkOut) dataToSave.checkOut = normalizeStayDate(dataToSave.checkOut, locale);
+      } else if (dataToSave.checkOut) {
+        const locale = await GeneralSettingsService.getLocaleConfig(dataToSave.propertyId ?? null);
+        dataToSave.checkOut = normalizeStayDate(dataToSave.checkOut, locale);
+      }
+
       const reservation = (reservationRepository.create({
         ...dataToSave,
         reservationNumber,
@@ -446,6 +627,14 @@ export class ReservationController {
       };
       if (bookingChannel && !dataToUpdate.channel) {
         dataToUpdate.channel = bookingChannel;
+      }
+
+      if (dataToUpdate.checkIn || dataToUpdate.checkOut) {
+        const locale = await GeneralSettingsService.getLocaleConfig(
+          dataToUpdate.propertyId ?? reservation.propertyId ?? null,
+        );
+        if (dataToUpdate.checkIn) dataToUpdate.checkIn = normalizeStayDate(dataToUpdate.checkIn, locale);
+        if (dataToUpdate.checkOut) dataToUpdate.checkOut = normalizeStayDate(dataToUpdate.checkOut, locale);
       }
 
       Object.assign(reservation, dataToUpdate);
@@ -779,11 +968,41 @@ export class ReservationController {
       );
 
       if (!rows || rows.length === 0) {
-        throw new AppError('Nenhum template de contrato de reservas encontrado.', 404);
+        const locale = await GeneralSettingsService.getLocaleConfig(reservation.propertyId ?? null);
+        const companyInfo = await EmailService.getCompanyInfo(reservation.propertyId);
+        const bankAccount = await this.getDefaultPropertyBankAccount(reservation.propertyId);
+        const html = prepareContractHtmlForPrint(
+          this.applyContractVariables(
+            DEFAULT_RESERVATION_CONTRACT_TEMPLATE,
+            reservation,
+            locale,
+            companyInfo,
+            bankAccount,
+          ),
+        );
+        res.json({
+          success: true,
+          data: {
+            reservationId: reservation.id,
+            reservationNumber: reservation.reservationNumber,
+            html,
+          },
+        });
+        return;
       }
 
-      const template = rows[0].content as string;
-      const html = this.applyContractVariables(template, reservation);
+      const locale = await GeneralSettingsService.getLocaleConfig(reservation.propertyId ?? null);
+      const companyInfo = await EmailService.getCompanyInfo(reservation.propertyId);
+      const bankAccount = await this.getDefaultPropertyBankAccount(reservation.propertyId);
+      const templateFromDb = rows[0].content as string;
+      const useDefaultTemplate =
+        !templateFromDb?.trim() ||
+        !templateFromDb.includes('ibiunature-v1') ||
+        templateFromDb.includes('CONTRATO DE RESERVA E HOSPEDAGEM');
+      const template = useDefaultTemplate ? DEFAULT_RESERVATION_CONTRACT_TEMPLATE : templateFromDb;
+      const html = prepareContractHtmlForPrint(
+        this.applyContractVariables(template, reservation, locale, companyInfo, bankAccount),
+      );
 
       res.json({
         success: true,

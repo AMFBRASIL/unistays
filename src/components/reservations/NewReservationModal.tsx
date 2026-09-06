@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useDateLocale } from "@/contexts/SystemSettingsContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +24,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { DateRange } from "react-day-picker";
 import { cn } from "@/lib/utils";
+import { resolveUnitOperationalStatus } from "@/lib/unitOperationalStatus";
 import SplitPaymentModal from "@/components/monetization/SplitPaymentModal";
 import { toast } from "sonner";
 import {
@@ -72,6 +74,7 @@ import {
   Send,
   Printer,
   FileCheck,
+  Copy,
   AlertTriangle,
   Star,
   Search,
@@ -465,6 +468,7 @@ const defaultFormData: ReservationData = {
 
 export function NewReservationModal({ open, onOpenChange, initialData, mode = "create", onSave }: NewReservationModalProps) {
   const { user } = useAuth();
+  const dateLocale = useDateLocale();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   const [activeTab, setActiveTab] = useState<TabId>("info");
@@ -524,10 +528,7 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
 
   const filteredGuests = availableGuests;
 
-  const parseLocalDate = (dateString: string): Date => {
-    const [year, month, day] = dateString.split("-").map(Number);
-    return new Date(year, month - 1, day);
-  };
+  const parseLocalDate = dateLocale.parseDateOnly;
 
   useEffect(() => {
     if (mode === "create" && user?.name && !formData.operatorName) {
@@ -742,6 +743,8 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
         merged.selectedRooms = [String(initialData.roomId)];
         merged.roomId = String(initialData.roomId);
       }
+      if (merged.checkIn) merged.checkIn = dateLocale.extractDateOnly(merged.checkIn);
+      if (merged.checkOut) merged.checkOut = dateLocale.extractDateOnly(merged.checkOut);
       setFormData(merged);
       setActiveTab("info");
       setShowSuccess(false);
@@ -842,7 +845,7 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
     for (let i = 0; i < nights; i++) {
       const d = new Date(start);
       d.setDate(d.getDate() + i);
-      const dateStr = d.toISOString().split("T")[0];
+      const dateStr = dateLocale.toDateOnlyKey(d);
       const customRate = unitRatesMap.get(`${unit.id}-${dateStr}`);
       const category = categoryForUnit ?? dbRoomTypes.find((rt: any) => String(rt.id) === String(unit.roomTypeId ?? unit.room_type_id ?? unit.category));
       const adultsToUse = overrides?.adults ?? Number(formData.adults);
@@ -1124,8 +1127,8 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
               const price = Number(extra.price) || 0;
               return { name: extra.name, type: "extra", quantity: qty, unitPrice: price, totalPrice: price * qty };
             }),
-            checkIn: formData.checkIn,
-            checkOut: formData.checkOut,
+            checkIn: dateLocale.extractDateOnly(formData.checkIn),
+            checkOut: dateLocale.extractDateOnly(formData.checkOut),
           });
         });
       } else {
@@ -1156,8 +1159,8 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
             const price = Number(extra.price) || 0;
             return { name: extra.name, type: "extra", quantity: qty, unitPrice: price, totalPrice: price * qty };
           }),
-          checkIn: formData.checkIn,
-          checkOut: formData.checkOut,
+          checkIn: dateLocale.extractDateOnly(formData.checkIn),
+          checkOut: dateLocale.extractDateOnly(formData.checkOut),
         });
       }
 
@@ -1659,18 +1662,18 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
 
       case "availability": {
         const dateRange: DateRange | undefined = formData.checkIn || formData.checkOut ? {
-          from: formData.checkIn ? new Date(formData.checkIn + "T12:00:00") : undefined,
-          to: formData.checkOut ? new Date(formData.checkOut + "T12:00:00") : undefined,
+          from: formData.checkIn ? dateLocale.parseDateOnly(formData.checkIn) : undefined,
+          to: formData.checkOut ? dateLocale.parseDateOnly(formData.checkOut) : undefined,
         } : undefined;
         
         const handleDateRangeSelect = (range: DateRange | undefined) => {
           if (range?.from) {
-            updateForm("checkIn", format(range.from, "yyyy-MM-dd"));
+            updateForm("checkIn", dateLocale.toDateOnlyKey(range.from));
           } else {
             updateForm("checkIn", "");
           }
           if (range?.to) {
-            updateForm("checkOut", format(range.to, "yyyy-MM-dd"));
+            updateForm("checkOut", dateLocale.toDateOnlyKey(range.to));
           } else {
             updateForm("checkOut", "");
           }
@@ -2313,16 +2316,12 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
                     // Sincronizar status com tarefas de governança + disponibilidade no período (banco)
                     const activeTask = dbHousekeepingTasks.find((t: any) => String(t.unit_id || t.unitId) === String(room.id));
                     const isOccupiedByReservation = occupiedUnitIds.includes(Number(room.id));
-                    let computedStatus = room.status ?? "available";
-                    let taskTypeLabel = "";
-                    if (isOccupiedByReservation) {
-                      computedStatus = "occupied";
-                    } else if (activeTask) {
-                      if (activeTask.category === "cleaning") computedStatus = "cleaning";
-                      else if (activeTask.category === "maintenance") computedStatus = "maintenance";
-                      else if (activeTask.category === "arrangement") computedStatus = "arrangement";
-                      taskTypeLabel = activeTask.type ?? "";
-                    }
+                    const computedStatus = resolveUnitOperationalStatus({
+                      unitStatus: room.status,
+                      activeTask,
+                      isOccupiedByReservation,
+                    });
+                    const taskTypeLabel = activeTask?.type ?? "";
                     
                     // Números dos quartos conectados (apenas os que estão na mesma categoria)
                     const connectedRoomNumbers = (room.connectedTo ?? []).map((connId: string | number) => {
@@ -3415,14 +3414,14 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
                     <CalendarClock className="h-4 w-4 text-amber-500" />
                     <span className="text-sm text-muted-foreground">Check-in:</span>
                     <span className="text-sm font-medium text-foreground ml-auto">
-                      {formData.checkIn ? format(new Date(formData.checkIn), "dd/MM/yyyy", { locale: ptBR }) : "-"} às {formData.checkInTime}
+                      {formData.checkIn ? dateLocale.formatDateOnly(formData.checkIn) : "-"} às {formData.checkInTime}
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
                     <CalendarClock className="h-4 w-4 text-amber-500" />
                     <span className="text-sm text-muted-foreground">Check-out:</span>
                     <span className="text-sm font-medium text-foreground ml-auto">
-                      {formData.checkOut ? format(new Date(formData.checkOut), "dd/MM/yyyy", { locale: ptBR }) : "-"} às {formData.checkOutTime}
+                      {formData.checkOut ? dateLocale.formatDateOnly(formData.checkOut) : "-"} às {formData.checkOutTime}
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
@@ -3868,202 +3867,278 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent
-        className="max-w-6xl max-h-[95vh] p-0 gap-0 overflow-hidden bg-gradient-to-b from-background to-muted/20"
+        className={cn(
+          "max-h-[95vh] p-0 gap-0 overflow-hidden bg-gradient-to-b from-background to-muted/20",
+          showSuccess ? "max-w-5xl w-[min(96vw,56rem)]" : "max-w-6xl"
+        )}
         onInteractOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
         {showSuccess ? (
-          /* Success Screen */
-          <div className="flex flex-col h-[85vh] animate-fade-in">
-            {/* Success Header */}
-            <div className="relative p-8 text-center bg-gradient-to-br from-green-500 via-emerald-500 to-teal-600 overflow-hidden flex-shrink-0">
-              <div className="absolute inset-0 opacity-20" style={{ backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.3) 1px, transparent 1px)", backgroundSize: "20px 20px" }} />
-              <div className="relative">
-                <div className="inline-flex items-center justify-center w-20 h-20 mx-auto mb-4 rounded-full bg-white/20 backdrop-blur-sm">
-                  <CheckCircle2 className="h-12 w-12 text-white animate-scale-in" />
-                </div>
-                <h2 className="text-2xl font-bold text-white mb-2">
-                  {mode === "edit" ? "Reserva Atualizada!" : "Reserva Confirmada!"}
-                </h2>
-                <p className="text-white/80">
-                  A reserva foi {mode === "edit" ? "atualizada" : "registrada"} com sucesso no sistema
-                </p>
-              </div>
-            </div>
+          (() => {
+            const selectedRoom = currentRooms.find((r: any) => String(r.id) === String(formData.roomId));
+            const selectedCategory = currentCategories.find((c: any) => String(c.id) === String(formData.category));
+            const selectedRatePlan = effectiveRatePlans.find((r: any) => String(r.id) === String(formData.ratePlan));
+            const roomPropertyId = selectedRoom?.propertyId ?? (selectedRoom as any)?.property_id;
+            const propertyName = dbProperties.find((p: any) => String(p.id) === String(roomPropertyId))?.name;
+            const nights = calculateNights();
+            const total = calculateTotal();
+            const hasNotifications =
+              (formData.sendEmailConfirmation && formData.guestEmail) ||
+              (formData.sendWhatsAppConfirmation && formData.guestPhone);
+            const paymentLabel =
+              formData.paymentStatus === "pending"
+                ? "Pendente"
+                : formData.paymentStatus === "partial"
+                  ? "Parcial"
+                  : "Pago";
+            const paymentMethodLabel =
+              (
+                {
+                  pix: "PIX",
+                  credit: "Crédito",
+                  debit: "Débito",
+                  transfer: "Transferência",
+                  cash: "Dinheiro",
+                  invoice: "Faturado",
+                } as Record<string, string>
+              )[formData.paymentMethod] ?? formData.paymentMethod;
 
-            <ScrollArea className="flex-1 min-h-0">
-              <div className="max-w-2xl mx-auto space-y-6 p-6">
-                {/* Protocol Card */}
-                <div className="p-6 rounded-2xl bg-gradient-to-br from-primary/5 via-primary/10 to-accent/5 border-2 border-primary/20">
-                  <div className="text-center mb-4">
-                    <p className="text-sm text-muted-foreground mb-2">Protocolo da Reserva</p>
-                    <div className="flex items-center justify-center gap-3">
-                      <span className="text-3xl font-mono font-bold text-primary tracking-wider">
-                        {protocolNumber}
-                      </span>
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        onClick={copyProtocol}
-                        className="hover:bg-primary/10"
-                      >
-                        <FileCheck className="h-5 w-5 text-primary" />
-                      </Button>
+            return (
+              <div className="flex flex-col max-h-[90vh] animate-fade-in">
+                <div className="relative flex-shrink-0 overflow-hidden bg-gradient-to-r from-emerald-600 via-green-600 to-teal-600 px-6 py-5 sm:px-8">
+                  <div
+                    className="absolute inset-0 opacity-15"
+                    style={{
+                      backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.35) 1px, transparent 1px)",
+                      backgroundSize: "18px 18px",
+                    }}
+                  />
+                  <div className="relative flex items-center gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/20 backdrop-blur-sm ring-1 ring-white/30">
+                      <CheckCircle2 className="h-8 w-8 text-white" />
                     </div>
-                  </div>
-                  <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                    <Clock className="h-4 w-4" />
-                    <span>Registrado em {confirmationTime}</span>
-                  </div>
-                </div>
-
-                {/* Email Notification */}
-                {formData.sendEmailConfirmation && formData.guestEmail && (
-                  <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center gap-4">
-                    <div className="p-3 rounded-full bg-blue-500/20">
-                      <Mail className="h-5 w-5 text-blue-500" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="font-medium text-foreground">E-mail de confirmação enviado</p>
-                      <p className="text-sm text-muted-foreground">{formData.guestEmail}</p>
-                    </div>
-                    <CheckCircle2 className="h-5 w-5 text-blue-500" />
-                  </div>
-                )}
-
-                {formData.sendWhatsAppConfirmation && formData.guestPhone && (
-                  <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/20 flex items-center gap-4">
-                    <div className="p-3 rounded-full bg-green-500/20">
-                      <MessageSquare className="h-5 w-5 text-green-500" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="font-medium text-foreground">WhatsApp enviado</p>
-                      <p className="text-sm text-muted-foreground">{formData.guestPhone}</p>
-                    </div>
-                    <CheckCircle2 className="h-5 w-5 text-green-500" />
-                  </div>
-                )}
-
-                {/* Reservation Summary */}
-                <div className="p-5 rounded-2xl bg-card border border-border">
-                  <h3 className="font-semibold text-foreground mb-4 flex items-center gap-2">
-                    <FileText className="h-5 w-5 text-primary" />
-                    Resumo da Reserva
-                  </h3>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="p-3 rounded-xl bg-muted/30">
-                      <div className="flex items-center gap-2 mb-2">
-                        <User className="h-4 w-4 text-blue-500" />
-                        <span className="text-xs text-muted-foreground">Hóspede</span>
-                      </div>
-                      <p className="font-semibold text-foreground">{formData.guestName || "—"}</p>
-                    </div>
-                    
-                    <div className="p-3 rounded-xl bg-muted/30">
-                      <div className="flex items-center gap-2 mb-2">
-                        <BedDouble className="h-4 w-4 text-violet-500" />
-                        <span className="text-xs text-muted-foreground">Quarto</span>
-                      </div>
-                      <p className="font-semibold text-foreground">
-                        {currentRooms.find((r: any) => String(r.id) === String(formData.roomId))?.number || "—"}
-                        {formData.category && ` • ${currentCategories.find((c: any) => String(c.id) === String(formData.category))?.name}`}
+                    <div className="min-w-0 flex-1 text-left">
+                      <h2 className="text-xl font-bold text-white sm:text-2xl">
+                        {mode === "edit" ? "Reserva Atualizada!" : "Reserva Confirmada!"}
+                      </h2>
+                      <p className="text-sm text-white/85">
+                        A reserva foi {mode === "edit" ? "atualizada" : "registrada"} com sucesso no sistema
                       </p>
                     </div>
-                    
-                    <div className="p-3 rounded-xl bg-muted/30">
-                      <div className="flex items-center gap-2 mb-2">
-                        <CalendarDays className="h-4 w-4 text-emerald-500" />
-                        <span className="text-xs text-muted-foreground">Check-in</span>
-                      </div>
-                      <p className="font-semibold text-foreground">
-                        {formData.checkIn ? format(new Date(formData.checkIn), "dd/MM/yyyy") : "—"}
-                        <span className="text-sm text-muted-foreground ml-1">às {formData.checkInTime}</span>
-                      </p>
-                    </div>
-                    
-                    <div className="p-3 rounded-xl bg-muted/30">
-                      <div className="flex items-center gap-2 mb-2">
-                        <CalendarDays className="h-4 w-4 text-rose-500" />
-                        <span className="text-xs text-muted-foreground">Check-out</span>
-                      </div>
-                      <p className="font-semibold text-foreground">
-                        {formData.checkOut ? format(new Date(formData.checkOut), "dd/MM/yyyy") : "—"}
-                        <span className="text-sm text-muted-foreground ml-1">às {formData.checkOutTime}</span>
-                      </p>
-                    </div>
-                  </div>
-
-                  <Separator className="my-4" />
-
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Users className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm text-muted-foreground">
-                        {formData.adults} adulto(s)
-                        {parseInt(formData.children) > 0 && `, ${formData.children} criança(s)`}
-                        {parseInt(formData.infants) > 0 && `, ${formData.infants} bebê(s)`}
-                      </span>
-                    </div>
-                    <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">
-                      {calculateNights()} noite(s)
+                    <Badge className="hidden shrink-0 border-white/30 bg-white/15 text-white sm:inline-flex">
+                      {nights} noite{nights !== 1 ? "s" : ""}
                     </Badge>
                   </div>
                 </div>
 
-                {/* Total Value */}
-                <div className="p-5 rounded-2xl bg-gradient-to-br from-amber-500/10 via-orange-500/10 to-amber-500/5 border border-amber-500/20">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-xl bg-amber-500/20">
-                        <DollarSign className="h-6 w-6 text-amber-600" />
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Valor Total</p>
-                        <p className="text-2xl font-bold text-foreground">
-                          R$ {calculateTotal().toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                <div className="flex-1 overflow-y-auto p-5 sm:p-6 lg:p-7">
+                  <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:gap-6">
+                    <div className="space-y-4 lg:col-span-4">
+                      <div className="rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/5 via-background to-accent/5 p-5 shadow-sm">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Protocolo da reserva
                         </p>
+                        <div className="mt-2 flex items-start gap-2">
+                          <span className="break-all font-mono text-lg font-bold leading-tight text-primary sm:text-xl">
+                            {protocolNumber}
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={copyProtocol}
+                            className="shrink-0 hover:bg-primary/10"
+                            title="Copiar protocolo"
+                          >
+                            <Copy className="h-4 w-4 text-primary" />
+                          </Button>
+                        </div>
+                        <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                          <Clock className="h-3.5 w-3.5 shrink-0" />
+                          <span>Registrado em {confirmationTime}</span>
+                        </div>
+                      </div>
+
+                      {hasNotifications && (
+                        <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
+                          <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            Confirmações enviadas
+                          </p>
+                          <div className="space-y-2">
+                            {formData.sendEmailConfirmation && formData.guestEmail && (
+                              <div className="flex items-center gap-3 rounded-xl bg-blue-500/8 px-3 py-2.5 ring-1 ring-blue-500/15">
+                                <div className="rounded-lg bg-blue-500/15 p-2">
+                                  <Mail className="h-4 w-4 text-blue-600" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-medium">E-mail</p>
+                                  <p className="truncate text-xs text-muted-foreground">{formData.guestEmail}</p>
+                                </div>
+                                <Check className="h-4 w-4 shrink-0 text-blue-600" />
+                              </div>
+                            )}
+                            {formData.sendWhatsAppConfirmation && formData.guestPhone && (
+                              <div className="flex items-center gap-3 rounded-xl bg-emerald-500/8 px-3 py-2.5 ring-1 ring-emerald-500/15">
+                                <div className="rounded-lg bg-emerald-500/15 p-2">
+                                  <MessageSquare className="h-4 w-4 text-emerald-600" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-medium">WhatsApp</p>
+                                  <p className="truncate text-xs text-muted-foreground">{formData.guestPhone}</p>
+                                </div>
+                                <Check className="h-4 w-4 shrink-0 text-emerald-600" />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1">
+                        <Button variant="outline" className="gap-2" onClick={() => setSummaryModalOpen(true)}>
+                          <Printer className="h-4 w-4" />
+                          Imprimir Voucher
+                        </Button>
+                        <Button variant="outline" className="gap-2">
+                          <Send className="h-4 w-4" />
+                          Reenviar
+                        </Button>
                       </div>
                     </div>
-                    <Badge className="bg-amber-500/20 text-amber-700 border-amber-500/30 capitalize">
-                      {formData.paymentStatus === "pending" ? "Pendente" : 
-                       formData.paymentStatus === "partial" ? "Parcial" : "Pago"}
-                    </Badge>
+
+                    <div className="lg:col-span-8">
+                      <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+                        <div className="border-b border-border bg-muted/30 px-5 py-3">
+                          <h3 className="flex items-center gap-2 font-semibold text-foreground">
+                            <FileText className="h-4 w-4 text-primary" />
+                            Resumo da estadia
+                          </h3>
+                        </div>
+
+                        <div className="grid grid-cols-1 divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                          <div className="px-5 py-4">
+                            <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-emerald-600">
+                              <CalendarDays className="h-3.5 w-3.5" />
+                              Check-in
+                            </p>
+                            <p className="text-base font-semibold text-foreground">
+                              {formData.checkIn ? dateLocale.formatDateOnly(formData.checkIn) : "—"}
+                            </p>
+                            <p className="text-sm text-muted-foreground">às {formData.checkInTime}</p>
+                          </div>
+                          <div className="flex flex-col items-center justify-center bg-primary/5 px-5 py-4 text-center">
+                            <CalendarRange className="mb-1 h-5 w-5 text-primary" />
+                            <p className="text-2xl font-bold text-primary">{nights}</p>
+                            <p className="text-xs text-muted-foreground">
+                              noite{nights !== 1 ? "s" : ""}
+                            </p>
+                          </div>
+                          <div className="px-5 py-4 sm:text-right">
+                            <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-rose-600 sm:justify-end">
+                              <CalendarDays className="h-3.5 w-3.5" />
+                              Check-out
+                            </p>
+                            <p className="text-base font-semibold text-foreground">
+                              {formData.checkOut ? dateLocale.formatDateOnly(formData.checkOut) : "—"}
+                            </p>
+                            <p className="text-sm text-muted-foreground">às {formData.checkOutTime}</p>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 border-t border-border p-5 sm:grid-cols-2">
+                          <div className="rounded-xl bg-muted/35 p-3.5">
+                            <div className="mb-1.5 flex items-center gap-2">
+                              <User className="h-4 w-4 text-blue-500" />
+                              <span className="text-xs text-muted-foreground">Hóspede</span>
+                            </div>
+                            <p className="font-semibold leading-snug text-foreground">
+                              {formData.guestName || "—"}
+                            </p>
+                            {formData.guestEmail && (
+                              <p className="mt-1 truncate text-xs text-muted-foreground">{formData.guestEmail}</p>
+                            )}
+                          </div>
+                          <div className="rounded-xl bg-muted/35 p-3.5">
+                            <div className="mb-1.5 flex items-center gap-2">
+                              <BedDouble className="h-4 w-4 text-violet-500" />
+                              <span className="text-xs text-muted-foreground">Acomodação</span>
+                            </div>
+                            <p className="font-semibold leading-snug text-foreground">
+                              {selectedRoom?.number ? `Quarto ${selectedRoom.number}` : "—"}
+                              {selectedCategory?.name ? ` · ${selectedCategory.name}` : ""}
+                            </p>
+                            {propertyName && (
+                              <p className="mt-1 truncate text-xs text-muted-foreground">{propertyName}</p>
+                            )}
+                          </div>
+                          <div className="rounded-xl bg-muted/35 p-3.5">
+                            <div className="mb-1.5 flex items-center gap-2">
+                              <Users className="h-4 w-4 text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground">Ocupação</span>
+                            </div>
+                            <p className="text-sm font-medium text-foreground">
+                              {formData.adults} adulto{parseInt(String(formData.adults)) !== 1 ? "s" : ""}
+                              {parseInt(formData.children) > 0 &&
+                                ` · ${formData.children} criança${parseInt(formData.children) !== 1 ? "s" : ""}`}
+                              {parseInt(formData.infants) > 0 &&
+                                ` · ${formData.infants} bebê${parseInt(formData.infants) !== 1 ? "s" : ""}`}
+                            </p>
+                          </div>
+                          <div className="rounded-xl bg-muted/35 p-3.5">
+                            <div className="mb-1.5 flex items-center gap-2">
+                              <Tag className="h-4 w-4 text-muted-foreground" />
+                              <span className="text-xs text-muted-foreground">Tarifa</span>
+                            </div>
+                            <p className="text-sm font-medium text-foreground">
+                              {selectedRatePlan?.name || "—"}
+                            </p>
+                            {formData.paymentMethod && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                Pagamento: {paymentMethodLabel}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-3 border-t border-border bg-gradient-to-r from-amber-500/8 via-orange-500/5 to-amber-500/8 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="rounded-xl bg-amber-500/15 p-2.5">
+                              <DollarSign className="h-5 w-5 text-amber-600" />
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Valor total da reserva</p>
+                              <p className="text-2xl font-bold text-foreground">
+                                R$ {total.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                              </p>
+                            </div>
+                          </div>
+                          <Badge className="w-fit border-amber-500/25 bg-amber-500/15 text-amber-800 capitalize">
+                            {paymentLabel}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                {/* Print/Actions - igual à página antiga: abre ReservationSummaryModal para imprimir */}
-                <div className="flex gap-3">
-                  <Button variant="outline" className="flex-1 gap-2" onClick={() => setSummaryModalOpen(true)}>
-                    <Printer className="h-4 w-4" />
-                    Imprimir Voucher
-                  </Button>
-                  <Button variant="outline" className="flex-1 gap-2">
-                    <Send className="h-4 w-4" />
-                    Reenviar Confirmação
-                  </Button>
+                <div className="flex-shrink-0 border-t border-border bg-muted/30 px-5 py-4 sm:px-6">
+                  <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
+                    <Button variant="outline" onClick={handleClose} className="sm:min-w-[140px]">
+                      Fechar
+                    </Button>
+                    {mode === "create" && (
+                      <Button
+                        onClick={handleCreateAnother}
+                        className="gap-2 bg-gradient-to-r from-primary to-primary/80 sm:min-w-[180px]"
+                      >
+                        <PlusCircle className="h-4 w-4" />
+                        Nova Reserva
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
-            </ScrollArea>
-
-            {/* Success Footer */}
-            <div className="p-4 border-t border-border bg-muted/30 flex-shrink-0">
-              <div className="flex items-center justify-center gap-4">
-                <Button variant="outline" onClick={handleClose} className="px-8">
-                  Fechar
-                </Button>
-                {mode === "create" && (
-                  <Button 
-                    onClick={handleCreateAnother} 
-                    className="px-8 gap-2 bg-gradient-to-r from-primary to-primary/80"
-                  >
-                    <PlusCircle className="h-4 w-4" />
-                    Nova Reserva
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
+            );
+          })()
         ) : (
           /* Normal Form */
           <>

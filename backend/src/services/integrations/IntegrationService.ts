@@ -898,27 +898,43 @@ export class IntegrationService {
     const today = todayDateOnly();
     const futureValues = values.filter((v) => !v.date || v.date >= today);
 
-    // Batch em chunks de 200
+    // Channex: um property_id por POST /restrictions — agrupar antes de chunkar
+    const byProperty = new Map<string, typeof futureValues>();
+    for (const v of futureValues) {
+      const pid = String(v.property_id || '');
+      if (!pid) continue;
+      const list = byProperty.get(pid) || [];
+      list.push(v);
+      byProperty.set(pid, list);
+    }
+
     let warnings = 0;
-    for (let i = 0; i < futureValues.length; i += 200) {
-      const chunk = futureValues.slice(i, i + 200);
-      const result = await channex.updateRestrictions(credentials, chunk);
-      if (!result.ok) {
-        await this.addSyncLog(connectionId, {
-          direction: 'outbound',
-          module: 'rates',
-          action: 'push_restrictions',
-          status: 'error',
-          errorMessage: result.message,
-          requestSummary: { chunkSize: chunk.length, startDate, endDate },
-        });
-        return {
-          ok: false,
-          message: result.message || 'Falha ao enviar rates',
-          ratePlans: rateMappings.length,
-        };
+    for (const [propertyId, propValues] of byProperty) {
+      for (let i = 0; i < propValues.length; i += 200) {
+        const chunk = propValues.slice(i, i + 200);
+        const result = await channex.updateRestrictions(credentials, chunk);
+        if (!result.ok) {
+          await this.addSyncLog(connectionId, {
+            direction: 'outbound',
+            module: 'rates',
+            action: 'push_restrictions',
+            status: 'error',
+            errorMessage: result.message,
+            requestSummary: {
+              propertyId,
+              chunkSize: chunk.length,
+              startDate,
+              endDate,
+            },
+          });
+          return {
+            ok: false,
+            message: result.message || 'Falha ao enviar rates',
+            ratePlans: rateMappings.length,
+          };
+        }
+        warnings += Array.isArray(result.warnings) ? result.warnings.length : 0;
       }
-      warnings += Array.isArray(result.warnings) ? result.warnings.length : 0;
     }
 
     await this.addSyncLog(connectionId, {
@@ -982,11 +998,25 @@ export class IntegrationService {
     const { adapter, credentials } = await this.getAdapterForConnection(connectionId);
     const channex = adapter as ChannexAdapter;
 
-    // Property mapping (reuse if exists)
+    // Property mapping (reuse if exists AND still accessible with current API key)
     const propMaps = await this.listMappings(connectionId, 'property');
-    let propertyExternalId = propMaps.find((m) => m.localId === unistaysPropertyId)?.externalId;
+    let propertyExternalId = propMaps.find((m) => m.localId === unistaysPropertyId)?.externalId || null;
+
+    if (propertyExternalId) {
+      const access = await channex.getProperty(credentials, propertyExternalId);
+      if (!access.ok) {
+        // Stale mapping (other Channex account / property-scoped key) — clear and recreate
+        await AppDataSource.query(
+          `DELETE FROM integration_entity_mappings
+           WHERE connection_id = ? AND entity_type = 'property' AND local_id = ?`,
+          [connectionId, unistaysPropertyId],
+        );
+        propertyExternalId = null;
+      }
+    }
 
     if (!propertyExternalId) {
+      const groupId = await channex.resolveGroupId(credentials);
       const created = await channex.createProperty(credentials, {
         title: property.name,
         currency: options?.currency || 'BRL',
@@ -999,6 +1029,7 @@ export class IntegrationService {
         address: [property.address, property.addressNumber].filter(Boolean).join(', ') || null,
         timezone: 'America/Sao_Paulo',
         propertyType: mapUnistaysPropertyType(property.type),
+        groupId,
       });
       if (!created.ok || !created.id) {
         throw new AppError(created.message || 'Falha ao criar property na Channex', 400);
@@ -1025,6 +1056,8 @@ export class IntegrationService {
       where: { propertyId: unistaysPropertyId },
     });
     const roomTypeById = new Map(roomTypes.map((r) => [r.id, r]));
+    const existingRtMaps = await this.listMappings(connectionId, 'room_type');
+    const rtMapByLocal = new Map(existingRtMaps.map((m) => [m.localId, m]));
 
     let roomTypesCreated = 0;
     let ratePlansCreated = 0;
@@ -1039,63 +1072,87 @@ export class IntegrationService {
       const occChildren = rt?.maxChildren ?? 0;
       const defaultOccupancy = Math.min(occAdults, rt?.maxGuests || sample.capacity || occAdults);
 
-      const createdRt = await channex.createRoomType(credentials, {
-        propertyExternalId,
-        title,
-        countOfRooms,
-        occAdults,
-        occChildren,
-        occInfants: 0,
-        defaultOccupancy,
-        description: rt?.description || null,
-      });
-      if (!createdRt.ok || !createdRt.id) {
-        throw new AppError(createdRt.message || `Falha ao criar room type ${title}`, 400);
-      }
-      roomTypesCreated += 1;
+      // Reuse existing room type mapping when present
+      let channexRoomTypeId: string | null =
+        rt != null ? rtMapByLocal.get(rt.id)?.externalId || null : null;
 
-      if (rt) {
-        await this.upsertEntityMapping(connectionId, {
-          entityType: 'room_type',
-          localId: rt.id,
-          externalId: createdRt.id,
-          externalLabel: title,
-          metadata: { channexPropertyId: propertyExternalId, countOfRooms },
+      if (!channexRoomTypeId) {
+        const createdRt = await channex.createRoomType(credentials, {
+          propertyExternalId,
+          title,
+          countOfRooms,
+          occAdults,
+          occChildren,
+          occInfants: 0,
+          defaultOccupancy,
+          description: rt?.description || null,
+        });
+        if (!createdRt.ok || !createdRt.id) {
+          throw new AppError(createdRt.message || `Falha ao criar room type ${title}`, 400);
+        }
+        channexRoomTypeId = createdRt.id;
+        roomTypesCreated += 1;
+
+        if (rt) {
+          await this.upsertEntityMapping(connectionId, {
+            entityType: 'room_type',
+            localId: rt.id,
+            externalId: channexRoomTypeId,
+            externalLabel: title,
+            metadata: { channexPropertyId: propertyExternalId, countOfRooms },
+          });
+        }
+      } else {
+        // Keep count_of_rooms in sync when re-provisioning
+        await channex.updateRoomType(credentials, channexRoomTypeId, {
+          title,
+          countOfRooms,
+          occAdults,
+          occChildren,
+          defaultOccupancy,
         });
       }
 
-      const createdRp = await channex.createRatePlan(credentials, {
-        propertyExternalId,
-        roomTypeExternalId: createdRt.id,
-        title: `${title} — BAR`,
-        currency: options?.currency || 'BRL',
-        occupancy: defaultOccupancy,
-      });
-      if (!createdRp.ok || !createdRp.id) {
-        throw new AppError(createdRp.message || `Falha ao criar rate plan para ${title}`, 400);
-      }
-      ratePlansCreated += 1;
+      const existingRpForUnit = (
+        await this.listMappings(connectionId, 'rate_plan')
+      ).find((m) => m.localId === sample.id);
 
-      await this.upsertEntityMapping(connectionId, {
-        entityType: 'rate_plan',
-        localId: sample.id,
-        externalId: createdRp.id,
-        externalLabel: `${title} — BAR`,
-        metadata: {
-          channexPropertyId: propertyExternalId,
-          channexRoomTypeId: createdRt.id,
-          unistaysRoomTypeId: rt?.id ?? null,
-        },
-      });
+      let channexRatePlanId = existingRpForUnit?.externalId || null;
+      if (!channexRatePlanId) {
+        const createdRp = await channex.createRatePlan(credentials, {
+          propertyExternalId,
+          roomTypeExternalId: channexRoomTypeId,
+          title: `${title} — BAR`,
+          currency: options?.currency || 'BRL',
+          occupancy: defaultOccupancy,
+        });
+        if (!createdRp.ok || !createdRp.id) {
+          throw new AppError(createdRp.message || `Falha ao criar rate plan para ${title}`, 400);
+        }
+        channexRatePlanId = createdRp.id;
+        ratePlansCreated += 1;
+
+        await this.upsertEntityMapping(connectionId, {
+          entityType: 'rate_plan',
+          localId: sample.id,
+          externalId: channexRatePlanId,
+          externalLabel: `${title} — BAR`,
+          metadata: {
+            channexPropertyId: propertyExternalId,
+            channexRoomTypeId,
+            unistaysRoomTypeId: rt?.id ?? null,
+          },
+        });
+      }
 
       for (const unit of groupUnits) {
         await this.upsertUnitMapping(connectionId, {
           localId: unit.id,
-          externalId: createdRt.id,
+          externalId: channexRoomTypeId,
           externalLabel: title,
           metadata: {
             channexPropertyId: propertyExternalId,
-            channexRatePlanId: createdRp.id,
+            channexRatePlanId,
             unistaysRoomTypeId: rt?.id ?? null,
           },
         });

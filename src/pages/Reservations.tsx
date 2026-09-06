@@ -5,6 +5,7 @@ import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useDateLocale } from "@/contexts/SystemSettingsContext";
 import {
   Plus,
   Search,
@@ -103,6 +104,7 @@ const channelColors: Record<string, string> = {
 
 export default function Reservations() {
   const queryClient = useQueryClient();
+  const dateLocale = useDateLocale();
   const [selectedStatus, setSelectedStatus] = useState<string>("all");
   const [selectedPropertyType, setSelectedPropertyType] = useState<PropertyType>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -174,8 +176,8 @@ export default function Reservations() {
         guestCompany: fullRes.guest?.companyName || fullRes.guest?.company || '',
         guestNotes: fullRes.guest?.notes || '',
 
-        checkIn: new Date(fullRes.checkIn).toISOString().split('T')[0],
-        checkOut: new Date(fullRes.checkOut).toISOString().split('T')[0],
+        checkIn: dateLocale.extractDateOnly(fullRes.checkIn),
+        checkOut: dateLocale.extractDateOnly(fullRes.checkOut),
         checkInTime: fullRes.checkInTime || '14:00',
         checkOutTime: fullRes.checkOutTime || '12:00',
 
@@ -732,8 +734,8 @@ export default function Reservations() {
             id: selectedReservation.dbId, // Use numeric ID instead of reservation number
             guest: selectedReservation.guest,
             room: selectedReservation.room,
-            checkIn: new Date(selectedReservation.checkIn).toISOString().split('T')[0],
-            checkOut: new Date(selectedReservation.checkOut).toISOString().split('T')[0],
+            checkIn: dateLocale.extractDateOnly(selectedReservation.checkIn),
+            checkOut: dateLocale.extractDateOnly(selectedReservation.checkOut),
             guests: selectedReservation.guests,
             status: selectedReservation.status,
             preCheckinDone: false,

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,6 +58,7 @@ type TaskCategory = "cleaning" | "arrangement" | "maintenance";
 
 interface Task {
   id: string;
+  unitId?: number;
   room: string;
   floor: string;
   category: TaskCategory;
@@ -103,6 +105,7 @@ const maintenanceTypes = [
 
 
 export default function Governanca() {
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -126,6 +129,7 @@ export default function Governanca() {
       if (tasksRes.success) {
         const mappedTasks: Task[] = (tasksRes.data?.tasks || []).map((t: any) => ({
           id: t.id.toString(),
+          unitId: t.unitId ?? t.unit_id,
           room: t.unitNumber || "N/A",
           floor: t.unitFloor ? `${t.unitFloor}º Andar` : "Térreo",
           category: t.category,
@@ -148,7 +152,9 @@ export default function Governanca() {
           id: u.id.toString(),
           name: u.name,
           role: u.group?.name || "Colaborador",
-          tasks: (tasksRes.data?.tasks || []).filter((t: any) => t.assignee_id === u.id && t.status !== 'completed').length,
+          tasks: (tasksRes.data?.tasks || []).filter(
+            (t: any) => (t.assigneeId ?? t.assignee_id) === u.id && t.status !== 'completed',
+          ).length,
 
           avatar: u.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2),
         }));
@@ -189,21 +195,52 @@ export default function Governanca() {
   const completionRate = stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0;
 
 
+  const invalidateRoomData = () => {
+    void queryClient.invalidateQueries({ queryKey: ["room-map-data"] });
+    void queryClient.invalidateQueries({ queryKey: ["units"] });
+  };
+
   const handleCreateTask = () => {
     fetchData();
+    invalidateRoomData();
     setIsNewTaskModalOpen(false);
   };
 
-  const handleUpdateStatus = async (taskId: string, newStatus: TaskStatus) => {
+  const handleUpdateStatus = async (task: Task, newStatus: TaskStatus) => {
+    if (task.status === newStatus) return;
     try {
-      const response = await api.updateHousekeepingTask(parseInt(taskId), { status: newStatus });
+      const response = await api.updateHousekeepingTask(parseInt(task.id), { status: newStatus });
       if (response.success) {
-        toast.success(`Status atualizado para ${statusConfig[newStatus].label}`);
-        fetchData();
+        if (newStatus === "completed") {
+          toast.success(`Tarefa concluída — unidade ${task.room} liberada para reserva`);
+        } else if (newStatus === "in_progress") {
+          toast.success(`Tarefa em andamento — unidade ${task.room} bloqueada para reserva`);
+        } else if (newStatus === "blocked") {
+          toast.success(`Unidade ${task.room} bloqueada`);
+        } else {
+          toast.success(`Status atualizado para ${statusConfig[newStatus].label}`);
+        }
+        await fetchData();
+        invalidateRoomData();
       } else {
-        toast.error("Erro ao atualizar status");
+        toast.error(response.error?.message || "Erro ao atualizar status");
       }
-    } catch (error) {
+    } catch {
+      toast.error("Erro de conexão");
+    }
+  };
+
+  const handleDeleteTask = async (task: Task) => {
+    try {
+      const response = await api.deleteHousekeepingTask(parseInt(task.id));
+      if (response.success) {
+        toast.success(`Tarefa removida — unidade ${task.room} reavaliada para reserva`);
+        await fetchData();
+        invalidateRoomData();
+      } else {
+        toast.error(response.error?.message || "Erro ao excluir tarefa");
+      }
+    } catch {
       toast.error("Erro de conexão");
     }
   };
@@ -374,7 +411,18 @@ export default function Governanca() {
             {/* Tasks Grid */}
             <ScrollArea className="h-[calc(100vh-400px)]">
               <div className="space-y-3 pr-4">
-                {filteredTasks.map((task) => {
+                {isLoading ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+                    <Loader2 className="w-8 h-8 animate-spin mb-3" />
+                    Carregando tarefas…
+                  </div>
+                ) : filteredTasks.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
+                    <ClipboardList className="w-12 h-12 mb-3 opacity-40" />
+                    <p className="font-medium text-foreground">Nenhuma tarefa encontrada</p>
+                    <p className="text-sm mt-1">Crie uma nova tarefa ou ajuste os filtros.</p>
+                  </div>
+                ) : filteredTasks.map((task) => {
                   const StatusIcon = statusConfig[task.status].icon;
                   const CategoryIcon = categoryConfig[task.category].icon;
 
@@ -420,17 +468,34 @@ export default function Governanca() {
                                   </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end" className="w-48">
-                                  <DropdownMenuItem onClick={() => handleUpdateStatus(task.id, "in_progress")}>
-                                    <RefreshCw className="w-4 h-4 mr-2" />
-                                    Iniciar
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => handleUpdateStatus(task.id, "completed")}>
-                                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                                    Concluir
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => handleUpdateStatus(task.id, "blocked")}>
+                                  {task.status !== "completed" && (
+                                    <>
+                                      <DropdownMenuItem onClick={() => void handleUpdateStatus(task, "in_progress")}>
+                                        <RefreshCw className="w-4 h-4 mr-2" />
+                                        Iniciar
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem onClick={() => void handleUpdateStatus(task, "completed")}>
+                                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                                        Concluir
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem onClick={() => void handleUpdateStatus(task, "blocked")}>
+                                        <XCircle className="w-4 h-4 mr-2" />
+                                        Bloquear
+                                      </DropdownMenuItem>
+                                    </>
+                                  )}
+                                  {task.status === "completed" && (
+                                    <DropdownMenuItem onClick={() => void handleUpdateStatus(task, "pending")}>
+                                      <RefreshCw className="w-4 h-4 mr-2" />
+                                      Reabrir
+                                    </DropdownMenuItem>
+                                  )}
+                                  <DropdownMenuItem
+                                    className="text-destructive"
+                                    onClick={() => void handleDeleteTask(task)}
+                                  >
                                     <XCircle className="w-4 h-4 mr-2" />
-                                    Bloquear
+                                    Excluir
                                   </DropdownMenuItem>
                                 </DropdownMenuContent>
                               </DropdownMenu>

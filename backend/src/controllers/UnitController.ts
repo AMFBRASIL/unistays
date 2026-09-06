@@ -64,7 +64,7 @@ export class UnitController {
           p.type as property_type,
           p.uuid as property_uuid
         FROM units u
-        LEFT JOIN properties p ON u.property_id = p.id AND p.deleted_at IS NULL
+        INNER JOIN properties p ON u.property_id = p.id AND p.deleted_at IS NULL
         LEFT JOIN room_types rt ON u.room_type_id = rt.id
         WHERE u.deleted_at IS NULL
       `;

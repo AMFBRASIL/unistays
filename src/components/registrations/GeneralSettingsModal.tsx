@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -45,6 +46,7 @@ interface GeneralSettingsModalProps {
 }
 
 export function GeneralSettingsModal({ open, onOpenChange }: GeneralSettingsModalProps) {
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("general");
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -176,6 +178,7 @@ export function GeneralSettingsModal({ open, onOpenChange }: GeneralSettingsModa
       const response = await api.createOrUpdateGeneralSettings(data);
 
       if (response.success) {
+        void queryClient.invalidateQueries({ queryKey: ["general-settings"] });
         toast.success("Configurações Salvas", {
           description: "As configurações gerais foram atualizadas com sucesso!",
         });

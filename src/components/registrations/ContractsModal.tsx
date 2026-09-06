@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,9 @@ import { Separator } from "@/components/ui/separator";
 import { CheckCircle2, FileSignature, LayoutTemplate, PenSquare, Sparkles, ShieldCheck, Plus, Pencil, Eye } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { DEFAULT_RESERVATION_CONTRACT_TEMPLATE } from "@/lib/reservationContractTemplate";
+
+const BASE_TEMPLATE = DEFAULT_RESERVATION_CONTRACT_TEMPLATE;
 
 interface ContractsModalProps {
   open: boolean;
@@ -40,7 +43,7 @@ interface ContractItem {
   templateHtml: string;
   /** Chaves selecionadas (sincronizadas com a tabela quando existir registro). */
   selectedVariables: string[];
-  /** Variáveis persistidas em `contract_template_variables`. */
+  /** VariÃ¡veis persistidas em `contract_template_variables`. */
   dbVariables: ContractTemplateVariableRow[];
 }
 
@@ -79,339 +82,80 @@ const STEP_TITLES = [
   "Regras e Publicacao",
 ];
 
-/** Variáveis suportadas na geração do HTML (ReservationController.applyContractVariables). */
+/** VariÃ¡veis suportadas na geraÃ§Ã£o do HTML (ReservationController.applyContractVariables). */
 const AVAILABLE_VARIABLES = [
-  { key: "{{hotel_nome}}", description: "Nome da propriedade" },
+  { key: "{{hotel_nome}}", description: "Nome da propriedade (empreendimento)" },
+  { key: "{{dados_pagamento_pix}}", description: "Dados PIX/conta bancária padrão da propriedade (Cadastros → Contas Bancárias)" },
+  { key: "{{locador_nome}}", description: "Nome do locador/contratada" },
+  { key: "{{locador_documento}}", description: "CPF/CNPJ do locador" },
+  { key: "{{locador_endereco}}", description: "Endereço do locador" },
+  { key: "{{locador_email}}", description: "E-mail do locador" },
+  { key: "{{imovel_cidade_uf}}", description: "Cidade/UF do empreendimento" },
+  { key: "{{unidade_descricao}}", description: "Unidade (ex.: 103 - Suite)" },
+  { key: "{{hospede_endereco_completo}}", description: "Endereço completo do hóspede" },
+  { key: "{{valor_total_extenso}}", description: "Valor total por extenso" },
+  { key: "{{hospedes_capacidade_max}}", description: "Capacidade máxima da unidade" },
+  { key: "{{hospedes_capacidade_extenso}}", description: "Capacidade por extenso (DEZ)" },
+  { key: "{{valor_hospede_excedente}}", description: "Valor por hóspede excedente/dia" },
   { key: "{{hotel_nome_fantasia}}", description: "Nome fantasia (usa nome da propriedade)" },
   { key: "{{propriedade_telefone}}", description: "Telefone da propriedade" },
   { key: "{{propriedade_email}}", description: "E-mail da propriedade" },
   { key: "{{propriedade_website}}", description: "Site da propriedade" },
   { key: "{{propriedade_cep}}", description: "CEP da propriedade" },
   { key: "{{propriedade_bairro}}", description: "Bairro da propriedade" },
-  { key: "{{contratada_nome}}", description: "Razão social / nome da contratada" },
+  { key: "{{contratada_nome}}", description: "RazÃ£o social / nome da contratada" },
   { key: "{{contratada_documento}}", description: "CNPJ/CPF da contratada (tax_id)" },
-  { key: "{{imovel_endereco}}", description: "Endereço do imóvel (propriedade)" },
-  { key: "{{hospede_nome}}", description: "Nome completo do hóspede" },
-  { key: "{{hospede_documento}}", description: "CPF/documento do hóspede" },
-  { key: "{{hospede_rg}}", description: "RG (reservado — preencher manualmente no template se usar)" },
-  { key: "{{hospede_endereco}}", description: "Endereço do hóspede" },
-  { key: "{{hospede_telefone}}", description: "Telefone do hóspede" },
-  { key: "{{hospede_email}}", description: "E-mail do hóspede" },
-  { key: "{{hospede_nacionalidade}}", description: "Nacionalidade do hóspede" },
-  { key: "{{hospede_cidade}}", description: "Cidade do hóspede" },
-  { key: "{{hospede_estado}}", description: "UF do hóspede" },
-  { key: "{{reserva_codigo}}", description: "Número da reserva" },
-  { key: "{{confirmacao_codigo}}", description: "Código de confirmação" },
+  { key: "{{imovel_endereco}}", description: "EndereÃ§o do imÃ³vel (propriedade)" },
+  { key: "{{hospede_nome}}", description: "Nome completo do hÃ³spede" },
+  { key: "{{hospede_documento}}", description: "CPF/documento do hÃ³spede" },
+  { key: "{{hospede_rg}}", description: "RG (reservado â€” preencher manualmente no template se usar)" },
+  { key: "{{hospede_endereco}}", description: "EndereÃ§o do hÃ³spede" },
+  { key: "{{hospede_telefone}}", description: "Telefone do hÃ³spede" },
+  { key: "{{hospede_email}}", description: "E-mail do hÃ³spede" },
+  { key: "{{hospede_nacionalidade}}", description: "Nacionalidade do hÃ³spede" },
+  { key: "{{hospede_cidade}}", description: "Cidade do hÃ³spede" },
+  { key: "{{hospede_estado}}", description: "UF do hÃ³spede" },
+  { key: "{{reserva_codigo}}", description: "NÃºmero da reserva" },
+  { key: "{{confirmacao_codigo}}", description: "CÃ³digo de confirmaÃ§Ã£o" },
   { key: "{{status_reserva}}", description: "Status da reserva (pending, confirmed, etc.)" },
   { key: "{{checkin_data}}", description: "Data de check-in (pt-BR)" },
   { key: "{{checkout_data}}", description: "Data de check-out (pt-BR)" },
-  { key: "{{checkin_hora}}", description: "Horário de check-in" },
-  { key: "{{checkout_hora}}", description: "Horário de check-out" },
+  { key: "{{checkin_hora}}", description: "HorÃ¡rio de check-in" },
+  { key: "{{checkout_hora}}", description: "HorÃ¡rio de check-out" },
   { key: "{{noites}}", description: "Quantidade de noites" },
-  { key: "{{hospedes_quantidade}}", description: "Total de hóspedes (adultos + crianças)" },
+  { key: "{{hospedes_quantidade}}", description: "Total de hÃ³spedes (adultos + crianÃ§as)" },
   { key: "{{hospedes_adultos}}", description: "Quantidade de adultos" },
-  { key: "{{hospedes_criancas}}", description: "Quantidade de crianças" },
-  { key: "{{quarto_nome}}", description: "Tipo + unidade (ex.: Standard — Unidade 205)" },
+  { key: "{{hospedes_criancas}}", description: "Quantidade de crianÃ§as" },
+  { key: "{{quarto_nome}}", description: "Tipo + unidade (ex.: Standard â€” Unidade 205)" },
   { key: "{{tipo_quarto}}", description: "Nome do tipo de quarto" },
-  { key: "{{unidade_numero}}", description: "Número da unidade" },
+  { key: "{{unidade_numero}}", description: "NÃºmero da unidade" },
   { key: "{{unidade_andar}}", description: "Andar da unidade" },
   { key: "{{unidade_capacidade}}", description: "Capacidade da unidade" },
-  { key: "{{plano_tarifa}}", description: "Nome do plano tarifário" },
+  { key: "{{plano_tarifa}}", description: "Nome do plano tarifÃ¡rio" },
   { key: "{{valor_total}}", description: "Valor total da reserva (BRL)" },
-  { key: "{{valor_diaria}}", description: "Valor da diária base (BRL)" },
+  { key: "{{valor_diaria}}", description: "Valor da diÃ¡ria base (BRL)" },
   { key: "{{valor_desconto}}", description: "Desconto (BRL)" },
   { key: "{{valor_taxas}}", description: "Impostos/taxas (BRL)" },
-  { key: "{{valor_taxas_servico}}", description: "Taxas de serviço (BRL)" },
-  { key: "{{valor_sinal}}", description: "Sinal / depósito cadastrado (BRL)" },
+  { key: "{{valor_taxas_servico}}", description: "Taxas de serviÃ§o (BRL)" },
+  { key: "{{valor_sinal}}", description: "Sinal / depÃ³sito cadastrado (BRL)" },
   { key: "{{valor_saldo}}", description: "Saldo em aberto (BRL)" },
-  { key: "{{valor_caucao}}", description: "Caução (usa depósito da reserva se não houver campo específico)" },
+  { key: "{{valor_caucao}}", description: "CauÃ§Ã£o (usa depÃ³sito da reserva se nÃ£o houver campo especÃ­fico)" },
   { key: "{{forma_pagamento}}", description: "Forma de pagamento" },
-  { key: "{{observacoes_reserva}}", description: "Pedidos especiais / observações" },
-  { key: "{{politica_pets}}", description: "Política de pets (texto)" },
-  { key: "{{cancelamento_prazo_dias}}", description: "Prazo de cancelamento (dias) — padrão contrato" },
-  { key: "{{cancelamento_percentual_reembolso}}", description: "% reembolso — padrão contrato" },
-  { key: "{{cancelamento_percentual_multa}}", description: "% multa — padrão contrato" },
-  { key: "{{caucao_prazo_devolucao_dias}}", description: "Prazo devolução caução (dias) — padrão" },
+  { key: "{{observacoes_reserva}}", description: "Pedidos especiais / observaÃ§Ãµes" },
+  { key: "{{politica_pets}}", description: "PolÃ­tica de pets (texto)" },
+  { key: "{{cancelamento_prazo_dias}}", description: "Prazo de cancelamento (dias) â€” padrÃ£o contrato" },
+  { key: "{{cancelamento_percentual_reembolso}}", description: "% reembolso â€” padrÃ£o contrato" },
+  { key: "{{cancelamento_percentual_multa}}", description: "% multa â€” padrÃ£o contrato" },
+  { key: "{{caucao_prazo_devolucao_dias}}", description: "Prazo devoluÃ§Ã£o cauÃ§Ã£o (dias) â€” padrÃ£o" },
   { key: "{{foro_cidade_uf}}", description: "Foro (cidade/UF da propriedade)" },
-  { key: "{{cidade_assinatura}}", description: "Cidade para rodapé de assinatura" },
-  { key: "{{data_assinatura}}", description: "Data da geração (pt-BR)" },
-  { key: "{{testemunha1_nome}}", description: "Testemunha 1 — preencher no sistema depois" },
+  { key: "{{cidade_assinatura}}", description: "Cidade para rodapÃ© de assinatura" },
+  { key: "{{data_assinatura}}", description: "Data da geraÃ§Ã£o (pt-BR)" },
+  { key: "{{testemunha1_nome}}", description: "Testemunha 1 â€” preencher no sistema depois" },
   { key: "{{testemunha1_documento}}", description: "CPF testemunha 1" },
   { key: "{{testemunha2_nome}}", description: "Testemunha 2" },
   { key: "{{testemunha2_documento}}", description: "CPF testemunha 2" },
 ];
 
-const BASE_TEMPLATE = `
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Contrato de Reserva e Hospedagem - {{hotel_nome}}</title>
-  <style>
-    :root {
-      --primary: #154c45;
-      --secondary: #2f7d73;
-      --text: #1f2937;
-      --muted: #6b7280;
-      --border: #d1d5db;
-      --bg: #f8fafc;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Arial, Helvetica, sans-serif;
-      color: var(--text);
-      background: var(--bg);
-      line-height: 1.55;
-    }
-    .page {
-      max-width: 980px;
-      margin: 32px auto;
-      background: #fff;
-      padding: 40px;
-      border-radius: 14px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.08);
-    }
-    h1, h2, h3 { color: var(--primary); margin-top: 0; }
-    h1 { font-size: 28px; text-align: center; margin-bottom: 8px; }
-    .subtitle { text-align: center; color: var(--muted); margin-bottom: 28px; font-size: 14px; }
-    .box {
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px;
-      margin-bottom: 20px;
-      background: #fff;
-    }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .field {
-      border: 1px dashed var(--border);
-      border-radius: 8px;
-      padding: 10px 12px;
-      min-height: 52px;
-      background: #fcfcfc;
-    }
-    .field strong {
-      display: block;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }
-    p { margin: 10px 0; }
-    ul { margin-top: 8px; }
-    li { margin-bottom: 6px; }
-    .clause { margin-bottom: 24px; }
-    .signatures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; margin-top: 40px; }
-    .signature-line {
-      margin-top: 50px;
-      border-top: 1px solid #000;
-      padding-top: 8px;
-      text-align: center;
-      font-size: 14px;
-    }
-    .note {
-      padding: 14px 16px;
-      border-left: 4px solid var(--secondary);
-      background: #effaf8;
-      margin: 20px 0;
-      border-radius: 8px;
-    }
-    .small { font-size: 13px; color: var(--muted); }
-    @media print {
-      body { background: #fff; }
-      .page { margin: 0; max-width: 100%; border-radius: 0; box-shadow: none; padding: 20px; }
-    }
-    @media (max-width: 768px) {
-      .grid, .signatures { grid-template-columns: 1fr; }
-      .page { padding: 20px; margin: 12px; }
-    }
-  </style>
-</head>
-<body>
-  <div class="page">
-    <h1>CONTRATO DE RESERVA E HOSPEDAGEM</h1>
-    <div class="subtitle">{{hotel_nome}}</div>
-
-    <div class="note">
-      Este instrumento regula a reserva, a hospedagem por temporada e as regras de uso do imovel, buscando linguagem clara, equilibrio entre as partes e seguranca juridica.
-    </div>
-
-    <div class="box">
-      <h2>1. Identificacao das Partes</h2>
-      <div class="grid">
-        <div class="field"><strong>Contratante / Hospede Responsavel</strong>{{hospede_nome}}</div>
-        <div class="field"><strong>CPF / RG</strong>{{hospede_documento}} / {{hospede_rg}}</div>
-        <div class="field"><strong>Endereco</strong>{{hospede_endereco}}</div>
-        <div class="field"><strong>Telefone / E-mail</strong>{{hospede_telefone}} / {{hospede_email}}</div>
-        <div class="field"><strong>Contratada / Anfitria</strong>{{contratada_nome}}</div>
-        <div class="field"><strong>CPF/CNPJ</strong>{{contratada_documento}}</div>
-        <div class="field"><strong>Nome fantasia</strong>{{hotel_nome_fantasia}}</div>
-        <div class="field"><strong>Endereco do imovel</strong>{{imovel_endereco}}</div>
-      </div>
-    </div>
-
-    <div class="box">
-      <h2>2. Dados da Reserva</h2>
-      <div class="grid">
-        <div class="field"><strong>Check-in</strong>{{checkin_data}} as {{checkin_hora}}</div>
-        <div class="field"><strong>Check-out</strong>{{checkout_data}} as {{checkout_hora}}</div>
-        <div class="field"><strong>N de hospedes</strong>{{hospedes_quantidade}}</div>
-        <div class="field"><strong>Valor total</strong>{{valor_total}}</div>
-        <div class="field"><strong>Sinal / Reserva</strong>{{valor_sinal}}</div>
-        <div class="field"><strong>Saldo remanescente</strong>{{valor_saldo}}</div>
-        <div class="field"><strong>Forma de pagamento</strong>{{forma_pagamento}}</div>
-        <div class="field"><strong>Caucao</strong>{{valor_caucao}}</div>
-      </div>
-    </div>
-
-    <div class="clause">
-      <h2>3. Objeto</h2>
-      <p>O presente contrato tem por objeto a reserva e a hospedagem temporaria do imovel acima identificado, exclusivamente para finalidade residencial, lazer e descanso, pelo periodo indicado neste instrumento, sendo vedado seu uso para fins comerciais, eventos nao autorizados, sublocacao, cessao a terceiros, festas abertas ao publico, atividades ilicitas ou qualquer utilizacao incompativel com a natureza da hospedagem.</p>
-    </div>
-
-    <div class="clause">
-      <h2>4. Prazo da Hospedagem</h2>
-      <p>A hospedagem vigorara do check-in ao check-out informados. A permanencia apos o horario de saida, sem autorizacao expressa da contratada, podera gerar cobranca adicional proporcional, diaria extra integral, multa contratual e demais perdas e danos.</p>
-    </div>
-
-    <div class="clause">
-      <h2>5. Formacao da Reserva</h2>
-      <p>A reserva somente sera considerada confirmada apos preenchimento correto dos dados, aceite deste contrato e pagamento do sinal ou valor integral, conforme condicao negociada.</p>
-    </div>
-
-    <div class="clause">
-      <h2>6. Valores, Pagamentos e Inadimplencia</h2>
-      <p>O hospede responsavel pagara o valor total da reserva nas condicoes descritas neste contrato. Em caso de atraso de quantias devidas, poderao incidir encargos legais e contratuais.</p>
-    </div>
-
-    <div class="clause">
-      <h2>7. Politica de Cancelamento, Remarcacao e No-show</h2>
-      <ul>
-        <li><strong>Cancelamento com mais de {{cancelamento_prazo_dias}} dias:</strong> devolucao de {{cancelamento_percentual_reembolso}}% do valor pago.</li>
-        <li><strong>Cancelamento com menos de {{cancelamento_prazo_dias}} dias:</strong> retencao de {{cancelamento_percentual_multa}}% do valor pago.</li>
-        <li><strong>No-show:</strong> nao comparecimento sem aviso sera tratado como desistenca.</li>
-        <li><strong>Remarcacao:</strong> sujeita a disponibilidade e eventual ajuste tarifario.</li>
-      </ul>
-    </div>
-
-    <div class="clause">
-      <h2>8. Limite de Ocupacao e Controle de Acesso</h2>
-      <p>Somente poderao permanecer no imovel as pessoas previamente informadas na reserva. Excesso de ocupantes podera gerar cobranca adicional ou encerramento da hospedagem.</p>
-    </div>
-
-    <div class="clause">
-      <h2>9. Regras de Uso do Imovel</h2>
-      <ul>
-        <li>preservar moveis, utensilios e instalacoes;</li>
-        <li>respeitar silencio, vizinhanca e normas locais;</li>
-        <li>nao realizar festas ou eventos sem autorizacao formal;</li>
-        <li>nao transferir chaves/senhas para terceiros nao autorizados.</li>
-      </ul>
-    </div>
-
-    <div class="clause">
-      <h2>10. Animais de Estimacao</h2>
-      <p>{{politica_pets}}</p>
-    </div>
-
-    <div class="clause">
-      <h2>11. Caucao, Vistoria e Responsabilidade por Danos</h2>
-      <p>A caucao, quando prevista, visa cobrir danos materiais e descumprimentos contratuais. Nao havendo pendencias, a devolucao ocorrera em ate {{caucao_prazo_devolucao_dias}} dias uteis.</p>
-    </div>
-
-    <div class="clause">
-      <h2>12. Areas de Lazer e Estruturas</h2>
-      <p>O uso de piscina, lago, deck e demais estruturas ocorrera por conta e risco dos usuarios, com supervisao obrigatoria de menores pelos responsaveis legais.</p>
-    </div>
-
-    <div class="clause">
-      <h2>13. Manutencao, Caso Fortuito e Forca Maior</h2>
-      <p>A contratada envidara esforcos razoaveis para manter o imovel em adequado estado de uso, observadas limitacoes por eventos alheios ao controle da operacao.</p>
-    </div>
-
-    <div class="clause">
-      <h2>14. Perda, Furto ou Extravio de Bens</h2>
-      <p>Cada hospede e responsavel por seus objetos pessoais, valores e documentos, nao havendo responsabilidade automatica da contratada sem comprovacao de culpa direta.</p>
-    </div>
-
-    <div class="clause">
-      <h2>15. Encerramento Antecipado da Hospedagem</h2>
-      <p>A contratada podera encerrar imediatamente a hospedagem em caso de descumprimento contratual, risco ao patrimonio ou pratica de ato ilicito.</p>
-    </div>
-
-    <div class="clause">
-      <h2>16. Comunicacoes e Provas</h2>
-      <p>As partes reconhecem como validas comunicacoes por WhatsApp, e-mail, plataforma e registros eletronicos relacionados a esta contratacao.</p>
-    </div>
-
-    <div class="clause">
-      <h2>17. Protecao de Dados Pessoais</h2>
-      <p>Os dados pessoais fornecidos serao utilizados para finalidades legitimas da reserva, hospedagem, seguranca e cumprimento legal.</p>
-    </div>
-
-    <div class="clause">
-      <h2>18. Disposicoes Gerais</h2>
-      <ul>
-        <li>A tolerancia quanto a descumprimentos nao implicara renuncia de direitos.</li>
-        <li>A eventual nulidade de clausula nao invalidara as demais.</li>
-        <li>Este contrato obriga as partes e seus sucessores, no que couber.</li>
-      </ul>
-    </div>
-
-    <div class="clause">
-      <h2>19. Foro</h2>
-      <p>Fica eleito o foro da comarca de <strong>{{foro_cidade_uf}}</strong>, com renuncia a qualquer outro, para dirimir duvidas oriundas deste contrato.</p>
-    </div>
-
-    <div class="box">
-      <h2>20. Assinaturas</h2>
-      <p>Por estarem de acordo, as partes assinam o presente instrumento, fisicamente ou por meio eletronico, em igual teor.</p>
-      <p><strong>Local e data:</strong> {{cidade_assinatura}}, {{data_assinatura}}.</p>
-
-      <div class="signatures">
-        <div>
-          <div class="signature-line">
-            CONTRATADA / ANFITRIA<br />
-            Nome: {{contratada_nome}}<br />
-            CPF/CNPJ: {{contratada_documento}}
-          </div>
-        </div>
-        <div>
-          <div class="signature-line">
-            CONTRATANTE / HOSPEDE RESPONSAVEL<br />
-            Nome: {{hospede_nome}}<br />
-            CPF: {{hospede_documento}}
-          </div>
-        </div>
-      </div>
-
-      <div class="signatures">
-        <div>
-          <div class="signature-line">
-            TESTEMUNHA 1<br />
-            Nome: {{testemunha1_nome}}<br />
-            CPF: {{testemunha1_documento}}
-          </div>
-        </div>
-        <div>
-          <div class="signature-line">
-            TESTEMUNHA 2<br />
-            Nome: {{testemunha2_nome}}<br />
-            CPF: {{testemunha2_documento}}
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <p class="small">
-      Sugestao pratica: antes de usar este modelo em operacao real, personalize politica de cancelamento, horarios, regras sobre visitantes, pets, caucao e identificacao completa da empresa/proprietario.
-    </p>
-  </div>
-</body>
-</html>
-`.trim();
 
 const extractVariables = (content: string): string[] => {
   const matches = content.match(/\{\{\s*[a-zA-Z0-9_]+\s*\}\}/g) || [];
@@ -487,7 +231,7 @@ export function ContractsModal({ open, onOpenChange }: ContractsModalProps) {
       setContracts(mapped);
     } catch (error) {
       console.error(error);
-      toast.error("Não foi possível carregar contratos do banco.");
+      toast.error("NÃ£o foi possÃ­vel carregar contratos do banco.");
     } finally {
       setLoading(false);
     }
@@ -642,7 +386,7 @@ function ContractWizardModal({ open, onOpenChange, initialContract, onSave }: Co
     [templateHtml]
   );
 
-  /** Catálogo + rótulos da tabela + placeholders encontrados no HTML. */
+  /** CatÃ¡logo + rÃ³tulos da tabela + placeholders encontrados no HTML. */
   const pickerVariables = useMemo(() => {
     const map = new Map<string, { key: string; description: string }>();
     for (const v of AVAILABLE_VARIABLES) {
@@ -661,7 +405,7 @@ function ContractWizardModal({ open, onOpenChange, initialContract, onSave }: Co
     }
     for (const k of extractVariables(templateHtml)) {
       if (!map.has(k)) {
-        map.set(k, { key: k, description: "Variável no HTML do template" });
+        map.set(k, { key: k, description: "VariÃ¡vel no HTML do template" });
       }
     }
     return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
@@ -1006,7 +750,7 @@ function ContractWizardModal({ open, onOpenChange, initialContract, onSave }: Co
                         </div>
                       )}
                       <p className="text-xs text-muted-foreground">
-                        Use "HTML completo" para manter documento inteiro com &lt;!DOCTYPE&gt;, &lt;head&gt; e &lt;style&gt; sem alterações.
+                        Use "HTML completo" para manter documento inteiro com &lt;!DOCTYPE&gt;, &lt;head&gt; e &lt;style&gt; sem alteraÃ§Ãµes.
                       </p>
                     </div>
                   </div>

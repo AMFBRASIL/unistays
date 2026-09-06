@@ -3,6 +3,7 @@ import { AppDataSource } from '@/config/database';
 import { AuthRequest } from '@/middlewares/auth.middleware';
 import { AppError } from '@/middlewares/error.middleware';
 import { CreateGeneralSettingsInput, UpdateGeneralSettingsInput } from '@/validators/generalSettings.validator';
+import { GeneralSettingsService } from '@/services/GeneralSettingsService';
 import { v4 as uuidv4 } from 'uuid';
 
 interface GeneralSettingsResponse {
@@ -314,6 +315,8 @@ export class GeneralSettingsController {
         await queryRunner.commitTransaction();
         await queryRunner.release();
 
+        GeneralSettingsService.invalidateCache();
+
         res.json({
           success: true,
           message: 'Configurações gerais atualizadas com sucesso',
@@ -372,6 +375,8 @@ export class GeneralSettingsController {
 
         await queryRunner.commitTransaction();
         await queryRunner.release();
+
+        GeneralSettingsService.invalidateCache();
 
         res.json({
           success: true,
