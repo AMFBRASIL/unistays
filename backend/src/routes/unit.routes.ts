@@ -10,6 +10,7 @@ const unitController = new UnitController();
 router.use(authenticate);
 
 router.get('/', unitController.getAll);
+router.get('/:id/summary', unitController.getSummary);
 router.get('/:id', unitController.getById);
 router.post('/', authorize('super_admin', 'admin', 'manager'), validate(createUnitSchema), unitController.create);
 router.put('/:id', authorize('super_admin', 'admin', 'manager'), validate(updateUnitSchema), unitController.update);

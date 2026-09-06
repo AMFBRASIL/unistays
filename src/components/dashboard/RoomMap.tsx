@@ -2,6 +2,7 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { UnitDashboardModal } from "@/components/dashboard/UnitDashboardModal";
 import {
   User,
   Wrench,
@@ -82,6 +83,7 @@ const statusConfig: Record<string, { label: string; className: string; icon: any
 
 export function RoomMap() {
   const [selectedType, setSelectedType] = useState<PropertyType>('all');
+  const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const { data: rooms, isLoading } = useRoomMapData();
 
   if (isLoading) {
@@ -214,6 +216,15 @@ export function RoomMap() {
                   return (
                     <div
                       key={room.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedRoom(room)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedRoom(room);
+                        }
+                      }}
                       className={cn(
                         "relative p-2 sm:p-3 rounded-lg sm:rounded-xl border-2 transition-all duration-200 cursor-pointer group",
                         config.className
@@ -267,6 +278,14 @@ export function RoomMap() {
           );
         })}
       </div>
+
+      <UnitDashboardModal
+        room={selectedRoom}
+        open={!!selectedRoom}
+        onOpenChange={(open) => {
+          if (!open) setSelectedRoom(null);
+        }}
+      />
     </div>
   );
 }

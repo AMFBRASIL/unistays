@@ -35,12 +35,15 @@ import {
   TreeDeciduous,
   Waves,
   Moon,
-  PlusCircle
+  PlusCircle,
+  BarChart3
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { NewTaskModal } from "@/components/governanca/NewTaskModal";
 import { NewReservationModal } from "@/components/reservations/NewReservationModal";
+import { UnitDashboardModal } from "@/components/dashboard/UnitDashboardModal";
+import type { Room as DashboardRoom } from "@/hooks/useRoomMapData";
 
 type PropertyType = "hotel" | "apart-hotel" | "loft" | "temporada";
 type StayType = "daily" | "weekly" | "monthly" | "long-stay";
@@ -139,6 +142,7 @@ export default function RoomMap() {
   const [selectedPropertyForUnit, setSelectedPropertyForUnit] = useState<number | undefined>(undefined);
   const [showNewReservationModal, setShowNewReservationModal] = useState(false);
   const [reservationInitialData, setReservationInitialData] = useState<any>(undefined);
+  const [dashboardDetailsRoom, setDashboardDetailsRoom] = useState<DashboardRoom | null>(null);
 
 
   // Queries
@@ -342,6 +346,16 @@ export default function RoomMap() {
   const occupancyRate = stats.total > 0 ? Math.round((occupiedCount / stats.total) * 100) : 0;
 
   const getProperty = (propertyId: number) => properties.find((p) => p.id === propertyId);
+
+  const openDashboardDetails = (room: Room) => {
+    const property = getProperty(room.propertyId);
+    setDashboardDetailsRoom({
+      ...room,
+      propertyName: property?.name ?? "Desconhecida",
+      propertyType: (property?.type ?? "hotel") as DashboardRoom["propertyType"],
+    });
+    setSelectedRoom(null);
+  };
 
   const getRateByView = (room: Room) => {
     switch (rateView) {
@@ -1135,13 +1149,21 @@ export default function RoomMap() {
                     </ScrollArea>
 
                     {/* Footer Actions */}
-                    <div className="p-6 border-t border-border bg-background/95 backdrop-blur flex flex-col sm:flex-row justify-between gap-4">
+                    <div className="p-6 border-t border-border bg-background/95 backdrop-blur flex flex-col sm:flex-row flex-wrap justify-between gap-3">
+                      <Button
+                        variant="default"
+                        className="flex-1 min-w-[140px]"
+                        onClick={() => openDashboardDetails(selectedRoom)}
+                      >
+                        <BarChart3 className="w-4 h-4 mr-2" />
+                        Detalhes
+                      </Button>
                       <Button
                         variant="outline"
-                        className="flex-1"
+                        className="flex-1 min-w-[140px]"
                         onClick={() => {
                           handleEditRoom(selectedRoom);
-                          setSelectedRoom(null); // Close detail modal to open edit modal
+                          setSelectedRoom(null);
                         }}
                       >
                         <Pencil className="w-4 h-4 mr-2" />
@@ -1149,14 +1171,14 @@ export default function RoomMap() {
                       </Button>
                       <Button
                         variant="secondary"
-                        className="flex-1"
+                        className="flex-1 min-w-[140px]"
                         onClick={() => setNewTaskModalOpen(true)}
                       >
                         <Plus className="w-4 h-4 mr-2" />
                         Criar Tarefa
                       </Button>
                       <Button
-                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                        className="flex-1 min-w-[140px] bg-emerald-600 hover:bg-emerald-700 text-white"
                         onClick={() => {
                           const prop = getProperty(selectedRoom.propertyId);
                           setReservationInitialData({
@@ -1179,6 +1201,15 @@ export default function RoomMap() {
             </div>
           </div>
         )}
+
+        <UnitDashboardModal
+          room={dashboardDetailsRoom}
+          open={!!dashboardDetailsRoom}
+          onOpenChange={(open) => {
+            if (!open) setDashboardDetailsRoom(null);
+          }}
+          showFullMapLink={false}
+        />
 
         <UnitModal
           open={unitModalOpen}

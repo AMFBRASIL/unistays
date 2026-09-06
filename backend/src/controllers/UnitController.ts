@@ -591,6 +591,291 @@ export class UnitController {
     }
   }
 
+  async getSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const unitId = parseInt(req.params.id, 10);
+      if (Number.isNaN(unitId)) {
+        throw new AppError('ID de unidade inválido', 400);
+      }
+
+      const connection = AppDataSource;
+      const REVENUE_STATUSES = "('confirmed', 'checked_in', 'checked_out')";
+      const ACTIVE_STATUSES = "('confirmed', 'checked_in')";
+
+      const unitRows = await connection.query(
+        `SELECT
+          u.id, u.number, u.name, u.floor, u.capacity, u.max_capacity AS maxCapacity,
+          u.beds, u.size_m2 AS sizeM2, u.status, u.rates, u.view,
+          rt.name AS type,
+          p.id AS propertyId, p.name AS propertyName, p.type AS propertyType
+        FROM units u
+        INNER JOIN properties p ON u.property_id = p.id AND p.deleted_at IS NULL
+        LEFT JOIN room_types rt ON u.room_type_id = rt.id
+        WHERE u.id = ? AND u.deleted_at IS NULL`,
+        [unitId]
+      );
+
+      if (!unitRows.length) {
+        throw new AppError('Unidade não encontrada', 404);
+      }
+
+      const unitRow = unitRows[0];
+      const rates = unitRow.rates
+        ? (typeof unitRow.rates === 'string' ? JSON.parse(unitRow.rates) : unitRow.rates)
+        : null;
+
+      const [currentRows, scheduledRows, upcomingFinancialRows, upcomingByMonthRows, financialRows, occupancyRows, channelRows, taskRows, recentRows] =
+        await Promise.all([
+          connection.query(
+            `SELECT
+              r.id, r.reservation_number AS reservationNumber, r.status,
+              r.check_in AS checkIn, r.check_out AS checkOut,
+              r.stay_type AS stayType, r.adults, r.children,
+              r.total_amount AS totalAmount, r.paid_amount AS paidAmount,
+              r.payment_status AS paymentStatus, r.channel,
+              g.first_name AS guestFirstName, g.last_name AS guestLastName,
+              g.phone AS guestPhone, g.email AS guestEmail
+            FROM reservations r
+            LEFT JOIN guests g ON g.id = r.guest_id
+            WHERE r.unit_id = ? AND r.deleted_at IS NULL
+              AND r.status IN ${ACTIVE_STATUSES}
+              AND CURDATE() >= DATE(r.check_in)
+              AND CURDATE() < DATE(r.check_out)
+            ORDER BY r.check_in ASC
+            LIMIT 1`,
+            [unitId]
+          ),
+          connection.query(
+            `SELECT
+              r.id, r.reservation_number AS reservationNumber, r.status,
+              r.check_in AS checkIn, r.check_out AS checkOut,
+              r.stay_type AS stayType, r.adults, r.children,
+              r.total_amount AS totalAmount, r.paid_amount AS paidAmount,
+              r.payment_status AS paymentStatus, r.channel,
+              g.first_name AS guestFirstName, g.last_name AS guestLastName,
+              g.phone AS guestPhone
+            FROM reservations r
+            LEFT JOIN guests g ON g.id = r.guest_id
+            WHERE r.unit_id = ? AND r.deleted_at IS NULL
+              AND r.status IN ('pending', 'confirmed', 'checked_in')
+              AND DATE(r.check_out) > CURDATE()
+              AND DATE(r.check_in) <= DATE_ADD(CURDATE(), INTERVAL 1 YEAR)
+            ORDER BY r.check_in ASC`,
+            [unitId]
+          ),
+          connection.query(
+            `SELECT
+              COUNT(*) AS reservationsCount,
+              COALESCE(SUM(r.total_amount), 0) AS totalRevenue,
+              COALESCE(SUM(r.paid_amount), 0) AS alreadyPaid,
+              COALESCE(SUM(GREATEST(r.total_amount - r.paid_amount, 0)), 0) AS pendingToReceive
+            FROM reservations r
+            WHERE r.unit_id = ? AND r.deleted_at IS NULL
+              AND r.status IN ('pending', 'confirmed', 'checked_in')
+              AND DATE(r.check_out) > CURDATE()
+              AND DATE(r.check_in) <= DATE_ADD(CURDATE(), INTERVAL 1 YEAR)`,
+            [unitId]
+          ),
+          connection.query(
+            `SELECT
+              DATE_FORMAT(r.check_in, '%Y-%m') AS monthKey,
+              COUNT(*) AS count,
+              COALESCE(SUM(r.total_amount), 0) AS revenue,
+              COALESCE(SUM(GREATEST(r.total_amount - r.paid_amount, 0)), 0) AS pending
+            FROM reservations r
+            WHERE r.unit_id = ? AND r.deleted_at IS NULL
+              AND r.status IN ('pending', 'confirmed', 'checked_in')
+              AND DATE(r.check_out) > CURDATE()
+              AND DATE(r.check_in) <= DATE_ADD(CURDATE(), INTERVAL 1 YEAR)
+            GROUP BY DATE_FORMAT(r.check_in, '%Y-%m')
+            ORDER BY monthKey ASC`,
+            [unitId]
+          ),
+          connection.query(
+            `SELECT
+              COUNT(*) AS reservationsCount,
+              COALESCE(SUM(r.total_amount), 0) AS revenue,
+              COALESCE(SUM(r.paid_amount), 0) AS collected,
+              COALESCE(SUM(GREATEST(r.total_amount - r.paid_amount, 0)), 0) AS pending,
+              COALESCE(AVG(
+                CASE
+                  WHEN DATEDIFF(DATE(r.check_out), DATE(r.check_in)) > 0
+                  THEN r.total_amount / DATEDIFF(DATE(r.check_out), DATE(r.check_in))
+                  ELSE r.total_amount
+                END
+              ), 0) AS avgDailyRate
+            FROM reservations r
+            WHERE r.unit_id = ? AND r.deleted_at IS NULL
+              AND r.status IN ${REVENUE_STATUSES}
+              AND DATE(r.check_in) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`,
+            [unitId]
+          ),
+          connection.query(
+            `SELECT COALESCE(SUM(
+              GREATEST(0, DATEDIFF(
+                LEAST(DATE(r.check_out), CURDATE()),
+                GREATEST(DATE(r.check_in), DATE_SUB(CURDATE(), INTERVAL 30 DAY))
+              ))
+            ), 0) AS occupiedNights
+            FROM reservations r
+            WHERE r.unit_id = ? AND r.deleted_at IS NULL
+              AND r.status IN ${REVENUE_STATUSES}
+              AND DATE(r.check_in) < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+              AND DATE(r.check_out) > DATE_SUB(CURDATE(), INTERVAL 30 DAY)`,
+            [unitId]
+          ),
+          connection.query(
+            `SELECT r.channel, COUNT(*) AS count, COALESCE(SUM(r.total_amount), 0) AS revenue
+            FROM reservations r
+            WHERE r.unit_id = ? AND r.deleted_at IS NULL
+              AND r.status IN ${REVENUE_STATUSES}
+              AND DATE(r.check_in) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+              AND r.channel IS NOT NULL AND r.channel != ''
+            GROUP BY r.channel
+            ORDER BY revenue DESC
+            LIMIT 1`,
+            [unitId]
+          ),
+          connection.query(
+            `SELECT id, category, status, priority, scheduled_at AS scheduledDate
+            FROM housekeeping_tasks
+            WHERE unit_id = ? AND deleted_at IS NULL
+              AND status IN ('pending', 'in_progress')
+            ORDER BY
+              CASE status WHEN 'in_progress' THEN 0 ELSE 1 END,
+              scheduled_at ASC
+            LIMIT 1`,
+            [unitId]
+          ),
+          connection.query(
+            `SELECT
+              r.id, r.reservation_number AS reservationNumber, r.status,
+              r.check_in AS checkIn, r.check_out AS checkOut,
+              r.total_amount AS totalAmount, r.paid_amount AS paidAmount,
+              r.channel, r.stay_type AS stayType,
+              g.first_name AS guestFirstName, g.last_name AS guestLastName
+            FROM reservations r
+            LEFT JOIN guests g ON g.id = r.guest_id
+            WHERE r.unit_id = ? AND r.deleted_at IS NULL
+              AND r.status IN ${REVENUE_STATUSES}
+              AND DATE(r.check_in) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            ORDER BY r.check_in DESC
+            LIMIT 5`,
+            [unitId]
+          ),
+        ]);
+
+      const mapReservation = (row: Record<string, unknown>) => {
+        const firstName = String(row.guestFirstName || '');
+        const lastName = String(row.guestLastName || '');
+        const guestName = `${firstName} ${lastName}`.trim() || 'Hóspede';
+        const adults = Number(row.adults) || 0;
+        const children = Number(row.children) || 0;
+        const totalAmount = parseFloat(String(row.totalAmount)) || 0;
+        const paidAmount = parseFloat(String(row.paidAmount)) || 0;
+        return {
+          id: row.id,
+          reservationNumber: row.reservationNumber,
+          status: row.status,
+          checkIn: row.checkIn,
+          checkOut: row.checkOut,
+          stayType: row.stayType,
+          adults,
+          children,
+          guests: adults + children,
+          guestName,
+          guestPhone: row.guestPhone || null,
+          guestEmail: row.guestEmail || null,
+          totalAmount,
+          paidAmount,
+          pendingAmount: Math.max(totalAmount - paidAmount, 0),
+          paymentStatus: row.paymentStatus,
+          channel: row.channel || null,
+        };
+      };
+
+      const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+      const formatMonthLabel = (monthKey: string) => {
+        const [year, month] = monthKey.split('-').map(Number);
+        if (!year || !month) return monthKey;
+        return `${MONTH_LABELS[month - 1]}/${String(year).slice(2)}`;
+      };
+
+      const financial = financialRows[0] || {};
+      const upcomingFinancial = upcomingFinancialRows[0] || {};
+      const occupiedNights = Number(occupancyRows[0]?.occupiedNights) || 0;
+      const scheduled = (scheduledRows || []).map(mapReservation);
+      const scheduledGuests = scheduled.reduce((acc: number, r: { guests: number }) => acc + r.guests, 0);
+      const upcomingByMonth = (upcomingByMonthRows || []).map((row: Record<string, unknown>) => ({
+        month: String(row.monthKey),
+        label: formatMonthLabel(String(row.monthKey)),
+        count: Number(row.count) || 0,
+        revenue: parseFloat(String(row.revenue)) || 0,
+        pending: parseFloat(String(row.pending)) || 0,
+      }));
+
+      res.json({
+        success: true,
+        data: {
+          unit: {
+            id: unitRow.id,
+            number: unitRow.number,
+            name: unitRow.name,
+            type: unitRow.type || 'Standard',
+            floor: unitRow.floor,
+            capacity: unitRow.capacity,
+            maxCapacity: unitRow.maxCapacity,
+            beds: unitRow.beds,
+            sizeM2: unitRow.sizeM2 ? Number(unitRow.sizeM2) : null,
+            status: unitRow.status,
+            view: unitRow.view,
+            rates,
+            propertyId: unitRow.propertyId,
+            propertyName: unitRow.propertyName,
+            propertyType: unitRow.propertyType,
+          },
+          current: currentRows[0] ? mapReservation(currentRows[0]) : null,
+          scheduled: {
+            count: scheduled.length,
+            totalGuests: scheduledGuests,
+            totalRevenue: parseFloat(String(upcomingFinancial.totalRevenue)) || 0,
+            alreadyPaid: parseFloat(String(upcomingFinancial.alreadyPaid)) || 0,
+            pendingToReceive: parseFloat(String(upcomingFinancial.pendingToReceive)) || 0,
+            periodMonths: 12,
+            byMonth: upcomingByMonth,
+            reservations: scheduled,
+          },
+          financial30d: {
+            revenue: parseFloat(String(financial.revenue)) || 0,
+            collected: parseFloat(String(financial.collected)) || 0,
+            pending: parseFloat(String(financial.pending)) || 0,
+            reservationsCount: Number(financial.reservationsCount) || 0,
+            avgDailyRate: Math.round(parseFloat(String(financial.avgDailyRate)) || 0),
+            occupiedNights,
+            occupancyRate: Math.round((occupiedNights / 30) * 100),
+          },
+          insights: {
+            topChannel: channelRows[0]?.channel || null,
+            topChannelRevenue: parseFloat(String(channelRows[0]?.revenue)) || 0,
+            activeTask: taskRows[0]
+              ? {
+                  id: taskRows[0].id,
+                  category: taskRows[0].category,
+                  status: taskRows[0].status,
+                  priority: taskRows[0].priority,
+                  scheduledDate: taskRows[0].scheduledDate,
+                }
+              : null,
+            nextCheckIn: scheduled[0]?.checkIn || null,
+          },
+          recentReservations: (recentRows || []).map(mapReservation),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async delete(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;

@@ -475,6 +475,110 @@ class ApiClient {
     });
   }
 
+  async getUnitSummary(id: number): Promise<ApiResponse<{
+    unit: {
+      id: number;
+      number: string;
+      name?: string | null;
+      type: string;
+      floor: number;
+      capacity: number;
+      maxCapacity: number;
+      beds?: string | null;
+      sizeM2?: number | null;
+      status: string;
+      view?: string | null;
+      rates?: { daily?: number; weekly?: number; monthly?: number } | null;
+      propertyId: number;
+      propertyName: string;
+      propertyType: string;
+    };
+    current: {
+      id: number;
+      reservationNumber: string;
+      status: string;
+      checkIn: string;
+      checkOut: string;
+      stayType: string;
+      adults: number;
+      children: number;
+      guests: number;
+      guestName: string;
+      guestPhone?: string | null;
+      guestEmail?: string | null;
+      totalAmount: number;
+      paidAmount: number;
+      paymentStatus: string;
+      channel?: string | null;
+    } | null;
+    scheduled: {
+      count: number;
+      totalGuests: number;
+      totalRevenue: number;
+      alreadyPaid: number;
+      pendingToReceive: number;
+      periodMonths: number;
+      byMonth: Array<{
+        month: string;
+        label: string;
+        count: number;
+        revenue: number;
+        pending: number;
+      }>;
+      reservations: Array<{
+        id: number;
+        reservationNumber: string;
+        status: string;
+        checkIn: string;
+        checkOut: string;
+        stayType: string;
+        guests: number;
+        guestName: string;
+        totalAmount: number;
+        paidAmount: number;
+        pendingAmount: number;
+        channel?: string | null;
+      }>;
+    };
+    financial30d: {
+      revenue: number;
+      collected: number;
+      pending: number;
+      reservationsCount: number;
+      avgDailyRate: number;
+      occupiedNights: number;
+      occupancyRate: number;
+    };
+    insights: {
+      topChannel?: string | null;
+      topChannelRevenue: number;
+      activeTask?: {
+        id: number;
+        category: string;
+        status: string;
+        priority?: string;
+        scheduledDate?: string;
+      } | null;
+      nextCheckIn?: string | null;
+    };
+    recentReservations: Array<{
+      id: number;
+      reservationNumber: string;
+      status: string;
+      checkIn: string;
+      checkOut: string;
+      guestName: string;
+      totalAmount: number;
+      paidAmount: number;
+      channel?: string | null;
+      stayType: string;
+    }>;
+  }>> {
+    return this.request(`/units/${id}/summary`, {
+      method: 'GET',
+    });
+  }
+
   async createUnit(data: {
     propertyId: number;
     number: string;
