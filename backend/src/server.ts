@@ -6,6 +6,7 @@ import compression from 'compression';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
+import fs from 'fs';
 import { AppDataSource } from '@/config/database';
 import { env } from '@/config/env';
 import { logger } from '@/utils/logger';
@@ -266,6 +267,46 @@ app.use(`/api/${env.API_VERSION}/inventory-counts`, inventoryCountRoutes);
 app.use(`/api/${env.API_VERSION}/purchase-orders`, purchaseOrderRoutes);
 app.use(`/api/${env.API_VERSION}/contract-templates`, contractTemplateRoutes);
 app.use(`/api/${env.API_VERSION}/property-bank-accounts`, propertyBankAccountRoutes);
+
+/** Em produção, serve o build do React quando o Nginx encaminha tudo para o Node (aaPanel). */
+function registerFrontendStatic(app: express.Application): void {
+  const candidates = [
+    path.join(process.cwd(), '..', 'dist'),
+    path.join(process.cwd(), 'dist'),
+  ];
+  const distPath = candidates.find((candidate) => fs.existsSync(path.join(candidate, 'index.html')));
+  if (!distPath) {
+    logger.warn('Frontend dist/ não encontrado — rotas GET / retornarão 404 da API');
+    return;
+  }
+
+  logger.info(`Servindo frontend estático: ${distPath}`);
+  app.use(
+    express.static(distPath, {
+      index: false,
+      maxAge: env.NODE_ENV === 'production' ? '1d' : 0,
+    }),
+  );
+
+  app.get('*', (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (
+      req.path.startsWith('/api/') ||
+      req.path === '/health' ||
+      req.path.startsWith('/uploads/') ||
+      req.path === '/deploy-hook'
+    ) {
+      return next();
+    }
+    res.sendFile(path.join(distPath, 'index.html'), (err) => {
+      if (err) next(err);
+    });
+  });
+}
+
+if (env.NODE_ENV === 'production') {
+  registerFrontendStatic(app);
+}
 
 // Error Handling
 app.use(notFoundHandler);
