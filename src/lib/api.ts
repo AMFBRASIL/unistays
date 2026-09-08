@@ -2065,10 +2065,95 @@ class ApiClient {
     });
   }
 
-  async testSmtpConfig(id: number, testEmail: string): Promise<ApiResponse<unknown>> {
+  async testSmtpConfig(
+    id: number,
+    testEmail: string,
+    overrides?: {
+      apiKey?: string;
+      apiDomain?: string;
+      mailgunRegion?: string;
+      mailgunKeyType?: string;
+      providerSlug?: string;
+      fromEmail?: string;
+      fromName?: string;
+      apiWebhookUrl?: string;
+    }
+  ): Promise<ApiResponse<unknown>> {
     return this.request(`/smtp-configs/${id}/test`, {
       method: 'POST',
-      body: JSON.stringify({ testEmail }),
+      body: JSON.stringify({ testEmail, ...overrides }),
+    });
+  }
+
+  async testSmtpConfigPreview(
+    testEmail: string,
+    data: {
+      providerSlug: string;
+      apiKey: string;
+      apiDomain?: string;
+      mailgunRegion?: string;
+      mailgunKeyType?: string;
+      fromEmail?: string;
+      fromName?: string;
+      apiWebhookUrl?: string;
+    }
+  ): Promise<ApiResponse<unknown>> {
+    return this.request('/smtp-configs/test-preview', {
+      method: 'POST',
+      body: JSON.stringify({ testEmail, ...data }),
+    });
+  }
+
+  async verifyMailgunCredentials(data: {
+    apiKey?: string;
+    mailgunRegion?: string;
+    mailgunKeyType?: string;
+    apiDomain?: string;
+    apiWebhookUrl?: string;
+    configId?: number;
+  }): Promise<ApiResponse<{ valid: boolean; region?: string; domains?: string[]; message?: string }>> {
+    const payload = {
+      apiKey: data.apiKey,
+      mailgunRegion: data.mailgunRegion,
+      mailgunKeyType: data.mailgunKeyType,
+      apiDomain: data.apiDomain,
+      apiWebhookUrl: data.apiWebhookUrl,
+      configId: data.configId,
+    };
+
+    const primary = await this.request<{ valid: boolean; region?: string; domains?: string[]; message?: string }>(
+      '/smtp-configs/verify-mailgun',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+
+    if (primary.success) return primary;
+
+    const msg = primary.error?.message ?? '';
+    if (!/não encontrada/i.test(msg)) return primary;
+
+    if (data.configId) {
+      return this.request(`/smtp-configs/${data.configId}/test`, {
+        method: 'POST',
+        body: JSON.stringify({
+          verifyOnly: true,
+          providerSlug: 'mailgun',
+          apiDomain: data.apiDomain,
+          mailgunKeyType: data.mailgunKeyType,
+          ...payload,
+        }),
+      });
+    }
+
+    return this.request('/smtp-configs/test-preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        verifyOnly: true,
+        providerSlug: 'mailgun',
+        ...payload,
+      }),
     });
   }
 

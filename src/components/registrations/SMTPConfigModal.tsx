@@ -53,10 +53,19 @@ import {
   AlertTriangle,
   Info,
   ExternalLink,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { GenericApiConnectionPanel } from "@/components/registrations/smtp/GenericApiConnectionPanel";
+import { MailgunConnectionPanel } from "@/components/registrations/smtp/MailgunConnectionPanel";
+import {
+  parseMailgunSettings,
+  serializeMailgunSettings,
+} from "@/components/registrations/smtp/mailgunSettings";
+import { SmtpServerConnectionPanel } from "@/components/registrations/smtp/SmtpServerConnectionPanel";
+import type { ApiProviderConfig, MailgunVerifyState, API_PROVIDERS } from "@/components/registrations/smtp/types";
 
 interface SMTPConfigModalProps {
   open: boolean;
@@ -121,17 +130,7 @@ interface SMTPConfig {
   maxRetries: string;
 }
 
-interface APIConfig {
-  provider: string;
-  apiKey: string;
-  domain: string;
-  fromEmail: string;
-  fromName: string;
-  dailyLimit: string;
-  webhookUrl: string;
-  trackOpens: boolean;
-  trackClicks: boolean;
-}
+interface APIConfig extends ApiProviderConfig {}
 
 interface NotificationSettings {
   bounceAlert: boolean;
@@ -151,15 +150,6 @@ const wizardSteps = [
   { id: "templates", title: "Templates", description: "Modelos ativos", icon: FileText },
   { id: "test", title: "Teste", description: "Verificar conexão", icon: TestTube },
   { id: "confirm", title: "Confirmar", description: "Revisar e salvar", icon: CheckCircle2 },
-];
-
-const apiProviders = [
-  { id: "sendgrid", name: "SendGrid", description: "Popular e robusto", color: "from-blue-500 to-cyan-500" },
-  { id: "mailgun", name: "Mailgun", description: "Alta entregabilidade", color: "from-red-500 to-orange-500" },
-  { id: "amazon-ses", name: "Amazon SES", description: "Escalável e econômico", color: "from-amber-500 to-yellow-500" },
-  { id: "brevo", name: "Brevo", description: "Tudo-em-um", color: "from-blue-600 to-indigo-600" },
-  { id: "resend", name: "Resend", description: "Moderno para devs", color: "from-violet-500 to-purple-500" },
-  { id: "postmark", name: "Postmark", description: "Transacional", color: "from-yellow-500 to-amber-500" },
 ];
 
 const activeTemplates = [
@@ -190,6 +180,8 @@ const defaultApiConfig: APIConfig = {
   provider: "",
   apiKey: "",
   domain: "",
+  mailgunRegion: "auto",
+  mailgunKeyType: "account",
   fromEmail: "",
   fromName: "",
   dailyLimit: "10000",
@@ -211,6 +203,8 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
   const [currentStep, setCurrentStep] = useState(0);
   const [showPassword, setShowPassword] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [isValidatingMailgun, setIsValidatingMailgun] = useState(false);
+  const [mailgunVerifyResult, setMailgunVerifyResult] = useState<MailgunVerifyState | null>(null);
   const [testResult, setTestResult] = useState<"success" | "error" | null>(null);
   const [providerType, setProviderType] = useState<ProviderType>("smtp");
 
@@ -276,10 +270,13 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
             provider: config.providerSlug ?? "",
             apiKey: config.apiKey ?? (config as { api_key?: string; api_key_encrypted?: string }).api_key ?? (config as { api_key_encrypted?: string }).api_key_encrypted ?? "",
             domain: config.apiDomain ?? "",
+            ...(() => {
+              const mg = parseMailgunSettings(config.apiWebhookUrl);
+              return { mailgunRegion: mg.region, mailgunKeyType: mg.keyType, webhookUrl: mg.webhookUrl };
+            })(),
             fromEmail: config.fromEmail ?? "",
             fromName: config.fromName ?? "",
             dailyLimit: String(config.dailyLimit ?? 10000),
-            webhookUrl: config.apiWebhookUrl ?? "",
             trackOpens: config.trackOpens !== false,
             trackClicks: config.trackClicks !== false,
           }));
@@ -345,10 +342,13 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
             provider: config.providerSlug ?? "",
             apiKey: config.apiKey ?? (config as { api_key?: string; api_key_encrypted?: string }).api_key ?? (config as { api_key_encrypted?: string }).api_key_encrypted ?? "",
             domain: config.apiDomain ?? "",
+            ...(() => {
+              const mg = parseMailgunSettings(config.apiWebhookUrl);
+              return { mailgunRegion: mg.region, mailgunKeyType: mg.keyType, webhookUrl: mg.webhookUrl };
+            })(),
             fromEmail: config.fromEmail ?? "",
             fromName: config.fromName ?? "",
             dailyLimit: String(config.dailyLimit ?? 10000),
-            webhookUrl: config.apiWebhookUrl ?? "",
             trackOpens: config.trackOpens !== false,
             trackClicks: config.trackClicks !== false,
           }));
@@ -396,21 +396,126 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
     }
   };
 
+  const handleValidateMailgun = async () => {
+    if (!apiConfig.apiKey && !currentConfig?.id) {
+      toast.error("Informe a API Key do Mailgun para validar.");
+      return;
+    }
+    setIsValidatingMailgun(true);
+    setMailgunVerifyResult(null);
+    try {
+      const res = await api.verifyMailgunCredentials({
+        apiKey: apiConfig.apiKey && apiConfig.apiKey !== "••••••••" ? apiConfig.apiKey : undefined,
+        mailgunRegion: apiConfig.mailgunRegion,
+        mailgunKeyType: apiConfig.mailgunKeyType,
+        apiDomain: apiConfig.domain || undefined,
+        apiWebhookUrl: serializeMailgunSettings(apiConfig),
+        configId: currentConfig?.id,
+      });
+      const data = res.data as { region?: string; domains?: string[]; message?: string } | undefined;
+      const ok = (res as { success?: boolean }).success === true;
+      if (ok) {
+        const msg =
+          data?.message ??
+          `API Key válida (${data?.region?.toUpperCase() ?? "?"})` +
+            (data?.domains?.length ? `. Domínios: ${data.domains.join(", ")}` : "");
+        setMailgunVerifyResult({ ok: true, message: msg, region: data?.region, domains: data?.domains });
+        toast.success("API Key válida", { description: msg });
+      } else {
+        const errMsg =
+          (res as { error?: { message?: string } }).error?.message ?? data?.message ?? "Chave inválida";
+        setMailgunVerifyResult({ ok: false, message: errMsg });
+        toast.error("API Key inválida", { description: errMsg });
+      }
+    } catch (e) {
+      const msg =
+        (e as { error?: { message?: string }; message?: string })?.error?.message ??
+        (e as Error)?.message ??
+        "Falha na validação";
+      setMailgunVerifyResult({ ok: false, message: msg });
+      toast.error("API Key inválida", { description: msg });
+    } finally {
+      setIsValidatingMailgun(false);
+    }
+  };
+
   const handleTestConnection = async () => {
     const configId = currentConfig?.id;
     const email = testEmail?.trim();
-    if (!configId) {
-      toast.error("Salve a configuração primeiro para testar a conexão.");
-      return;
-    }
     if (!email) {
       toast.error("Informe o e-mail de destino para o teste.");
       return;
     }
+    if (providerType === "api" && !apiConfig.apiKey && !currentConfig?.id) {
+      toast.error("Informe a API Key para testar a conexão.");
+      return;
+    }
+    if (!configId && providerType !== "api") {
+      toast.error("Salve a configuração primeiro para testar a conexão.");
+      return;
+    }
+    if (providerType === "api" && apiConfig.provider === "mailgun") {
+      setIsValidatingMailgun(true);
+      try {
+        const verifyRes = await api.verifyMailgunCredentials({
+          apiKey: apiConfig.apiKey && apiConfig.apiKey !== "••••••••" ? apiConfig.apiKey : undefined,
+          mailgunRegion: apiConfig.mailgunRegion,
+          mailgunKeyType: apiConfig.mailgunKeyType,
+          apiDomain: apiConfig.domain || undefined,
+          apiWebhookUrl: serializeMailgunSettings(apiConfig),
+          configId: currentConfig?.id,
+        });
+        const verifyOk = (verifyRes as { success?: boolean }).success === true;
+        if (!verifyOk) {
+          const errMsg =
+            (verifyRes as { error?: { message?: string } }).error?.message ?? "Chave Mailgun inválida";
+          setTestResult("error");
+          toast.error("Valide a API Key antes do teste", { description: errMsg });
+          return;
+        }
+      } catch (e) {
+        const msg =
+          (e as { error?: { message?: string }; message?: string })?.error?.message ??
+          (e as Error)?.message ??
+          "Chave Mailgun inválida";
+        setTestResult("error");
+        toast.error("Valide a API Key antes do teste", { description: msg });
+        return;
+      } finally {
+        setIsValidatingMailgun(false);
+      }
+    }
+
     setIsTesting(true);
     setTestResult(null);
     try {
-      const res = await api.testSmtpConfig(configId, email);
+      const apiWebhookUrl = serializeMailgunSettings(apiConfig);
+      const apiOverrides =
+        providerType === "api"
+          ? {
+              providerSlug: apiConfig.provider,
+              apiKey: apiConfig.apiKey !== "••••••••" ? apiConfig.apiKey : undefined,
+              apiDomain: apiConfig.domain,
+              mailgunRegion: apiConfig.mailgunRegion,
+              mailgunKeyType: apiConfig.mailgunKeyType,
+              apiWebhookUrl,
+              fromEmail: apiConfig.fromEmail || undefined,
+              fromName: apiConfig.fromName || undefined,
+            }
+          : undefined;
+
+      const res = configId
+        ? await api.testSmtpConfig(configId, email, apiOverrides)
+        : await api.testSmtpConfigPreview(email, {
+            providerSlug: apiConfig.provider,
+            apiKey: apiConfig.apiKey,
+            apiDomain: apiConfig.domain || undefined,
+            mailgunRegion: apiConfig.mailgunRegion,
+            mailgunKeyType: apiConfig.mailgunKeyType,
+            apiWebhookUrl,
+            fromEmail: apiConfig.fromEmail || undefined,
+            fromName: apiConfig.fromName || undefined,
+          });
       const data = res.data as { success?: boolean; lastTestResult?: string; message?: string } | undefined;
       const errMsg = (res as { error?: { message?: string } }).error?.message;
       const ok = (res as { success?: boolean }).success === true || data?.success === true;
@@ -456,7 +561,7 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
           lastTestEmail: testEmail?.trim() || undefined,
           trackOpens: apiConfig.trackOpens,
           trackClicks: apiConfig.trackClicks,
-          apiWebhookUrl: apiConfig.webhookUrl || undefined,
+          apiWebhookUrl: serializeMailgunSettings(apiConfig),
           apiDomain: apiConfig.domain || undefined,
           templateIds,
           notificationSettings: {
@@ -480,7 +585,7 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
           payload.dailyLimit = parseInt(apiConfig.dailyLimit, 10) || 0;
           if (apiConfig.apiKey && apiConfig.apiKey !== "••••••••") payload.apiKey = apiConfig.apiKey;
           payload.apiDomain = apiConfig.domain || undefined;
-          payload.apiWebhookUrl = apiConfig.webhookUrl || undefined;
+          payload.apiWebhookUrl = serializeMailgunSettings(apiConfig);
         }
         await api.updateSmtpConfig(currentConfig.id, payload);
         toast.success("Configuração atualizada com sucesso.");
@@ -496,7 +601,7 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
           lastTestEmail: testEmail?.trim() || undefined,
           trackOpens: apiConfig.trackOpens,
           trackClicks: apiConfig.trackClicks,
-          apiWebhookUrl: apiConfig.webhookUrl || undefined,
+          apiWebhookUrl: serializeMailgunSettings(apiConfig),
           apiDomain: apiConfig.domain || undefined,
           templateIds,
           notificationSettings: {
@@ -564,7 +669,11 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
           return !!smtpConfig.server && !!smtpConfig.port;
         }
         if (providerType === "api") {
-          return !!apiConfig.provider && !!apiConfig.apiKey;
+          if (!apiConfig.provider || !apiConfig.apiKey) return false;
+          if (apiConfig.provider === "mailgun" && apiConfig.mailgunKeyType === "sending" && !apiConfig.domain.trim()) {
+            return false;
+          }
+          return true;
         }
         return true;
       case "sender":
@@ -585,7 +694,7 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
     }
   };
 
-  const getSelectedProvider = () => apiProviders.find((p) => p.id === apiConfig.provider);
+  const getSelectedProvider = () => API_PROVIDERS.find((p) => p.id === apiConfig.provider);
 
   const renderStepContent = () => {
     switch (wizardSteps[currentStep].id) {
@@ -760,200 +869,55 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
             </div>
 
             {providerType === "smtp" && (
-              <div className="max-w-2xl mx-auto space-y-6">
-                <div className="p-4 rounded-xl bg-blue-50 border border-blue-200">
-                  <div className="flex items-center gap-2">
-                    <Server className="h-4 w-4 text-blue-600" />
-                    <span className="text-sm font-medium text-blue-700">
-                      Configuração do Servidor SMTP
-                    </span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Servidor SMTP *</Label>
-                    <Input
-                      placeholder="smtp.exemplo.com"
-                      value={smtpConfig.server}
-                      onChange={(e) =>
-                        setSmtpConfig({ ...smtpConfig, server: e.target.value })
-                      }
-                      className="h-11"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <Label>Porta *</Label>
-                      <Select
-                        value={smtpConfig.port}
-                        onValueChange={(v) =>
-                          setSmtpConfig({ ...smtpConfig, port: v })
-                        }
-                      >
-                        <SelectTrigger className="h-11">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="25">25</SelectItem>
-                          <SelectItem value="465">465 (SSL)</SelectItem>
-                          <SelectItem value="587">587 (TLS)</SelectItem>
-                          <SelectItem value="2525">2525</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Segurança</Label>
-                      <Select
-                        value={smtpConfig.security}
-                        onValueChange={(v) =>
-                          setSmtpConfig({ ...smtpConfig, security: v })
-                        }
-                      >
-                        <SelectTrigger className="h-11">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">Nenhuma</SelectItem>
-                          <SelectItem value="tls">TLS</SelectItem>
-                          <SelectItem value="ssl">SSL</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Timeout (segundos)</Label>
-                    <Input
-                      type="number"
-                      value={smtpConfig.timeout}
-                      onChange={(e) =>
-                        setSmtpConfig({ ...smtpConfig, timeout: e.target.value })
-                      }
-                      className="h-11"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Tentativas em Falha</Label>
-                    <Input
-                      type="number"
-                      value={smtpConfig.maxRetries}
-                      onChange={(e) =>
-                        setSmtpConfig({ ...smtpConfig, maxRetries: e.target.value })
-                      }
-                      className="h-11"
-                    />
-                  </div>
-                </div>
+              <div className="max-w-2xl mx-auto">
+                <SmtpServerConnectionPanel
+                  config={{
+                    server: smtpConfig.server,
+                    port: smtpConfig.port,
+                    security: smtpConfig.security,
+                    timeout: smtpConfig.timeout,
+                    maxRetries: smtpConfig.maxRetries,
+                  }}
+                  onChange={(patch) => setSmtpConfig({ ...smtpConfig, ...patch })}
+                />
               </div>
             )}
 
             {providerType === "api" && (
-              <div className="max-w-2xl mx-auto space-y-6">
-                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200">
-                  <div className="flex items-center gap-2">
-                    <Zap className="h-4 w-4 text-emerald-600" />
-                    <span className="text-sm font-medium text-emerald-700">
-                      Selecione um Provedor de API
-                    </span>
-                  </div>
-                </div>
+              <div className="max-w-2xl mx-auto space-y-4">
+                <GenericApiConnectionPanel
+                  apiConfig={apiConfig}
+                  onChange={(patch) => {
+                    setApiConfig({ ...apiConfig, ...patch });
+                    if (patch.apiKey !== undefined) setMailgunVerifyResult(null);
+                  }}
+                  onSelectProvider={(providerId) =>
+                    setApiConfig({
+                      ...apiConfig,
+                      provider: providerId,
+                      mailgunKeyType: providerId === "mailgun" ? apiConfig.mailgunKeyType : "account",
+                      mailgunRegion: providerId === "mailgun" ? apiConfig.mailgunRegion : "auto",
+                    })
+                  }
+                  showPassword={showPassword}
+                  onTogglePassword={() => setShowPassword(!showPassword)}
+                />
 
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  {apiProviders.map((provider) => (
-                    <button
-                      key={provider.id}
-                      onClick={() =>
-                        setApiConfig({ ...apiConfig, provider: provider.id })
-                      }
-                      className={cn(
-                        "p-4 rounded-xl border-2 text-left transition-all hover:shadow-md",
-                        apiConfig.provider === provider.id
-                          ? "border-emerald-500 bg-emerald-50"
-                          : "border-border hover:border-emerald-300 bg-card"
-                      )}
-                    >
-                      <div
-                        className={`w-10 h-10 rounded-lg bg-gradient-to-br ${provider.color} flex items-center justify-center mb-2`}
-                      >
-                        <Mail className="h-5 w-5 text-white" />
-                      </div>
-                      <p className="font-medium">{provider.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {provider.description}
-                      </p>
-                    </button>
-                  ))}
-                </div>
-
-                {apiConfig.provider && (
-                  <div className="space-y-4 pt-4">
-                    <div className="space-y-2">
-                      <Label>API Key *</Label>
-                      <div className="relative">
-                        <Input
-                          type={showPassword ? "text" : "password"}
-                          placeholder="SG.xxxx..."
-                          value={apiConfig.apiKey}
-                          onChange={(e) =>
-                            setApiConfig({ ...apiConfig, apiKey: e.target.value })
-                          }
-                          className="h-11 pr-20 font-mono"
-                        />
-                        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setShowPassword(!showPassword)}
-                            className="p-1.5 text-muted-foreground hover:text-foreground"
-                          >
-                            {showPassword ? (
-                              <EyeOff className="h-4 w-4" />
-                            ) : (
-                              <Eye className="h-4 w-4" />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(apiConfig.apiKey);
-                              toast.success("Copiado!");
-                            }}
-                            className="p-1.5 text-muted-foreground hover:text-foreground"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Domínio Autenticado</Label>
-                        <Input
-                          placeholder="mail.seuhotel.com"
-                          value={apiConfig.domain}
-                          onChange={(e) =>
-                            setApiConfig({ ...apiConfig, domain: e.target.value })
-                          }
-                          className="h-11"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Limite Diário</Label>
-                        <Input
-                          type="number"
-                          placeholder="10000"
-                          value={apiConfig.dailyLimit}
-                          onChange={(e) =>
-                            setApiConfig({ ...apiConfig, dailyLimit: e.target.value })
-                          }
-                          className="h-11"
-                        />
-                      </div>
-                    </div>
-                  </div>
+                {apiConfig.provider === "mailgun" && (
+                  <MailgunConnectionPanel
+                    apiConfig={apiConfig}
+                    onChange={(patch) => {
+                      setApiConfig({ ...apiConfig, ...patch });
+                      if (patch.apiKey !== undefined) setMailgunVerifyResult(null);
+                    }}
+                    showPassword={showPassword}
+                    onTogglePassword={() => setShowPassword(!showPassword)}
+                    configId={currentConfig?.id}
+                    verifyResult={mailgunVerifyResult}
+                    isValidating={isValidatingMailgun}
+                    onValidate={handleValidateMailgun}
+                    canValidate={!!apiConfig.apiKey || !!currentConfig?.id}
+                  />
                 )}
               </div>
             )}

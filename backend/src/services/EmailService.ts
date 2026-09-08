@@ -17,6 +17,8 @@ interface APIConfig {
   provider: 'sendgrid' | 'mailgun' | 'ses' | 'brevo' | 'resend' | 'postmark';
   apiKey: string;
   domain?: string | null;
+  mailgunRegion?: 'us' | 'eu' | 'auto';
+  mailgunKeyType?: 'account' | 'sending';
   fromEmail: string;
   fromName: string;
 }
@@ -178,51 +180,23 @@ export class EmailService {
         break;
       }
       case 'mailgun': {
-        if (!config.domain) {
-          throw new AppError('Domínio do Mailgun é obrigatório', 400);
-        }
-        if (!config.apiKey) {
+        if (!config.apiKey?.trim()) {
           throw new AppError('API Key do Mailgun é obrigatória', 400);
         }
-        try {
-          const formData = require('form-data');
-          const Mailgun = require('mailgun.js');
-          const mailgun = new Mailgun(formData);
-          const mg = mailgun.client({
-            username: 'api',
-            key: config.apiKey,
-          });
-          const messageData: any = {
-            from: `"${options.fromName}" <${options.fromEmail}>`,
-            to: options.to,
-            subject: options.subject,
-            html: options.html,
-            text: options.text || options.subject,
-            ...(options.replyTo ? { 'reply-to': options.replyTo } : {}),
-          };
-          await mg.messages.create(config.domain, messageData);
-        } catch (error: any) {
-          // Tratar erros específicos do Mailgun
-          if (error.status === 401 || error.statusCode === 401) {
-            throw new AppError(
-              'Erro de autenticação no Mailgun: API Key inválida ou sem permissões. Verifique sua API Key e certifique-se de que o domínio está associado à sua conta.',
-              401
-            );
-          }
-          if (error.status === 400 || error.statusCode === 400) {
-            throw new AppError(
-              `Erro na requisição do Mailgun: ${error.message || 'Domínio inválido ou configuração incorreta'}`,
-              400
-            );
-          }
-          if (error.status === 404 || error.statusCode === 404) {
-            throw new AppError(
-              'Domínio do Mailgun não encontrado. Verifique se o domínio está correto e foi verificado na sua conta do Mailgun.',
-              404
-            );
-          }
-          throw error; // Re-lançar outros erros
-        }
+        const { sendMailgunMessage } = await import('@/services/mailgun/MailgunService');
+        await sendMailgunMessage({
+          apiKey: config.apiKey,
+          region: config.mailgunRegion ?? 'auto',
+          keyType: config.mailgunKeyType ?? 'account',
+          domain: config.domain,
+          fromEmail: options.fromEmail,
+          fromName: options.fromName,
+          to: options.to,
+          subject: options.subject,
+          html: options.html,
+          text: options.text,
+          replyTo: options.replyTo,
+        });
         break;
       }
       case 'ses': {
@@ -654,7 +628,7 @@ export class EmailService {
     try {
       const query = `
         SELECT sc.id, sc.property_id, sc.name, sc.provider_type, sc.smtp_host, sc.smtp_port, sc.smtp_encryption,
-               sc.smtp_username, sc.smtp_password, sc.api_key, sc.api_domain,
+               sc.smtp_username, sc.smtp_password, sc.api_key, sc.api_domain, sc.api_webhook_url,
                ep.slug AS provider_slug
         FROM smtp_configurations sc
         LEFT JOIN email_providers ep ON ep.id = sc.email_provider_id
@@ -698,12 +672,16 @@ export class EmailService {
       if (providerType === 'api') {
         const apiKey = row.api_key ?? row.api_key_encrypted ?? '';
         const provider = this.mapProviderSlugToProvider(row.provider_slug);
+        const { parseMailgunSettings } = await import('@/services/mailgun/MailgunService');
+        const mailgunSettings = provider === 'mailgun' ? parseMailgunSettings(row.api_webhook_url) : null;
         return {
           method: 'api',
           apiConfig: {
             provider,
             apiKey,
             domain: row.api_domain || undefined,
+            mailgunRegion: mailgunSettings?.region,
+            mailgunKeyType: mailgunSettings?.keyType,
             fromEmail,
             fromName,
           },

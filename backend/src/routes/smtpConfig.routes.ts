@@ -5,6 +5,8 @@ const router = Router();
 const controller = new SmtpConfigController();
 
 router.get('/current', (req, res, next) => controller.getCurrent(req, res, next));
+router.post('/verify-mailgun', (req, res, next) => controller.verifyMailgun(req, res, next));
+router.post('/test-preview', (req, res, next) => controller.testPreview(req, res, next));
 router.get('/', (req, res, next) => controller.list(req, res, next));
 router.get('/:id', (req, res, next) => controller.getById(req, res, next));
 router.post('/', (req, res, next) => controller.create(req, res, next));

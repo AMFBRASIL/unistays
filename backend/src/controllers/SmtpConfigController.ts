@@ -739,13 +739,17 @@ export class SmtpConfigController {
     await queryRunner.connect();
     try {
       const id = parseInt((req as any).params.id, 10);
-      const testEmail = (req.body as any)?.testEmail || (req.body as any)?.email;
+      const body = req.body as Record<string, unknown>;
+      const verifyOnly = body.verifyOnly === true;
+      const testEmail = body?.testEmail || body?.email;
       if (isNaN(id)) throw new AppError('ID inválido', 400);
-      if (!testEmail || !String(testEmail).trim()) throw new AppError('Informe o e-mail de teste (testEmail)', 400);
+      if (!verifyOnly && (!testEmail || !String(testEmail).trim())) {
+        throw new AppError('Informe o e-mail de teste (testEmail)', 400);
+      }
 
       const [config] = await queryRunner.query(
         `SELECT sc.provider_type, sc.smtp_host, sc.smtp_port, sc.smtp_encryption, sc.smtp_username, sc.smtp_password,
-                sc.api_key, sc.api_domain, sc.name,
+                sc.api_key, sc.api_domain, sc.api_webhook_url, sc.name,
                 ep.slug AS provider_slug
          FROM smtp_configurations sc
          LEFT JOIN email_providers ep ON ep.id = sc.email_provider_id
@@ -779,17 +783,78 @@ export class SmtpConfigController {
       const { EmailService } = await import('@/services/EmailService');
 
       if (providerType === 'api') {
-        const apiKey = config.api_key ?? config.api_key_encrypted ?? '';
-        const slug = config.provider_slug || 'sendgrid';
+        const overrideApiKey =
+          typeof body.apiKey === 'string' && body.apiKey.trim() !== '' && body.apiKey !== '••••••••'
+            ? body.apiKey.trim()
+            : null;
+        const apiKey = overrideApiKey ?? config.api_key ?? config.api_key_encrypted ?? '';
+        const slug = (typeof body.providerSlug === 'string' ? body.providerSlug : config.provider_slug) || 'sendgrid';
         const provider = EmailService.mapProviderSlugToProvider(slug);
+        const overrideDomain = body.apiDomain !== undefined ? (body.apiDomain as string | null) : undefined;
+        const domain =
+          overrideDomain !== undefined
+            ? (overrideDomain?.trim() ? overrideDomain.trim() : undefined)
+            : config.api_domain || undefined;
+        const { parseMailgunSettings } = await import('@/services/mailgun/MailgunService');
+        const mailgunStored = parseMailgunSettings(
+          (typeof body.apiWebhookUrl === 'string' ? body.apiWebhookUrl : null) ?? config.api_webhook_url
+        );
+        const mailgunRegion =
+          provider === 'mailgun'
+            ? ((typeof body.mailgunRegion === 'string' ? body.mailgunRegion : null) ??
+                mailgunStored.region) as 'us' | 'eu' | 'auto'
+            : undefined;
+        const mailgunKeyType =
+          provider === 'mailgun'
+            ? ((body.mailgunKeyType === 'sending' ? 'sending' : body.mailgunKeyType === 'account' ? 'account' : null) ??
+                mailgunStored.keyType)
+            : undefined;
+        if (typeof body.fromEmail === 'string' && body.fromEmail.trim()) {
+          fromEmail = body.fromEmail.trim();
+        }
+        if (typeof body.fromName === 'string' && body.fromName.trim()) {
+          fromName = body.fromName.trim();
+        }
         const apiConfig = {
           provider: provider as 'sendgrid' | 'mailgun' | 'ses' | 'brevo' | 'resend' | 'postmark',
           apiKey,
-          domain: config.api_domain || undefined,
+          domain,
+          mailgunRegion,
+          mailgunKeyType,
           fromEmail,
           fromName,
         };
         try {
+          if (provider === 'mailgun') {
+            const { verifyMailgunCredentials, formatMailgunVerifyFailure } = await import(
+              '@/services/mailgun/MailgunService'
+            );
+            const verification = await verifyMailgunCredentials(
+              apiKey,
+              mailgunRegion ?? 'auto',
+              mailgunKeyType ?? 'account',
+              domain
+            );
+            if (!verification.valid) {
+              throw formatMailgunVerifyFailure(verification);
+            }
+            if (verifyOnly) {
+              await queryRunner.release();
+              res.json({
+                success: true,
+                data: {
+                  valid: true,
+                  region: verification.region,
+                  domains: verification.domains,
+                  message: `API Key válida na região ${verification.region.toUpperCase()}. Domínios: ${verification.domains.join(', ') || 'nenhum'}.`,
+                },
+              });
+              return;
+            }
+          }
+          if (verifyOnly) {
+            throw new AppError('verifyOnly disponível apenas para Mailgun', 400);
+          }
           await EmailService.sendTestEmail('api', String(testEmail).trim(), apiConfig);
         } catch (err: any) {
           await queryRunner.query(
@@ -847,6 +912,157 @@ export class SmtpConfigController {
       } catch {
         //
       }
+      next(error);
+    }
+  }
+
+  /**
+   * POST /smtp-configs/verify-mailgun - valida API Key (sem enviar e-mail).
+   */
+  async verifyMailgun(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const apiKeyRaw = body.apiKey ?? body.api_key;
+      let apiKey = typeof apiKeyRaw === 'string' ? apiKeyRaw.trim() : '';
+
+      if ((!apiKey || apiKey === '••••••••') && body.configId != null) {
+        const configId = Number(body.configId);
+        if (!isNaN(configId)) {
+          const q = AppDataSource.createQueryRunner();
+          const [row] = await q.query('SELECT api_key FROM smtp_configurations WHERE id = ? LIMIT 1', [configId]);
+          await q.release();
+          apiKey = row?.api_key ? String(row.api_key).trim() : '';
+        }
+      }
+
+      if (!apiKey || apiKey === '••••••••') {
+        throw new AppError('Informe a API Key do Mailgun para validar', 400);
+      }
+
+      const { verifyMailgunCredentials, parseMailgunSettings, formatMailgunVerifyFailure } = await import(
+        '@/services/mailgun/MailgunService'
+      );
+      const mailgunStored = parseMailgunSettings(
+        typeof body.apiWebhookUrl === 'string' ? body.apiWebhookUrl : null
+      );
+      const region = (
+        (typeof body.mailgunRegion === 'string' ? body.mailgunRegion : null) ?? mailgunStored.region
+      ) as 'us' | 'eu' | 'auto';
+      const keyType =
+        (body.mailgunKeyType === 'sending' ? 'sending' : body.mailgunKeyType === 'account' ? 'account' : null) ??
+        mailgunStored.keyType;
+      const apiDomain =
+        typeof body.apiDomain === 'string' && body.apiDomain.trim() ? body.apiDomain.trim() : undefined;
+      const result = await verifyMailgunCredentials(apiKey, region, keyType, apiDomain);
+      if (!result.valid) {
+        throw formatMailgunVerifyFailure(result);
+      }
+
+      res.json({
+        success: true,
+        data: {
+          valid: true,
+          region: result.region,
+          domains: result.domains,
+          message: `API Key válida na região ${result.region.toUpperCase()}. Domínios: ${result.domains.join(', ') || 'nenhum'}.`,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /smtp-configs/test-preview - testa envio sem config salva (usa credenciais do body).
+   */
+  async testPreview(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const verifyOnly = body.verifyOnly === true;
+      const testEmail = body.testEmail || body.email;
+      if (!verifyOnly && (!testEmail || !String(testEmail).trim())) {
+        throw new AppError('Informe o e-mail de teste (testEmail)', 400);
+      }
+      const providerSlug = (body.providerSlug ?? body.provider) as string;
+      if (!providerSlug) {
+        throw new AppError('Informe o provedor (providerSlug)', 400);
+      }
+      const apiKeyRaw = body.apiKey ?? body.api_key;
+      const apiKey = typeof apiKeyRaw === 'string' ? apiKeyRaw.trim() : '';
+      if (!apiKey || apiKey === '••••••••') {
+        throw new AppError('Informe a API Key para o teste', 400);
+      }
+      const fromEmail = typeof body.fromEmail === 'string' && body.fromEmail.trim()
+        ? body.fromEmail.trim()
+        : 'noreply@example.com';
+      const fromName = typeof body.fromName === 'string' && body.fromName.trim()
+        ? body.fromName.trim()
+        : 'Unistays';
+      const { EmailService } = await import('@/services/EmailService');
+      const { verifyMailgunCredentials, parseMailgunSettings, formatMailgunVerifyFailure } = await import(
+        '@/services/mailgun/MailgunService'
+      );
+      const provider = EmailService.mapProviderSlugToProvider(providerSlug);
+      const apiDomain =
+        typeof body.apiDomain === 'string' && body.apiDomain.trim() ? body.apiDomain.trim() : undefined;
+      const mailgunStored = parseMailgunSettings(
+        typeof body.apiWebhookUrl === 'string' ? body.apiWebhookUrl : null
+      );
+      const mailgunRegion =
+        provider === 'mailgun'
+          ? (((typeof body.mailgunRegion === 'string' ? body.mailgunRegion : null) ??
+              mailgunStored.region) as 'us' | 'eu' | 'auto')
+          : undefined;
+      const mailgunKeyType =
+        provider === 'mailgun'
+          ? ((body.mailgunKeyType === 'sending' ? 'sending' : body.mailgunKeyType === 'account' ? 'account' : null) ??
+              mailgunStored.keyType)
+          : undefined;
+
+      if (provider === 'mailgun') {
+        const verification = await verifyMailgunCredentials(
+          apiKey,
+          mailgunRegion ?? 'auto',
+          mailgunKeyType ?? 'account',
+          apiDomain
+        );
+        if (!verification.valid) {
+          throw formatMailgunVerifyFailure(verification);
+        }
+        if (verifyOnly) {
+          res.json({
+            success: true,
+            data: {
+              valid: true,
+              region: verification.region,
+              domains: verification.domains,
+              message: `API Key válida na região ${verification.region.toUpperCase()}. Domínios: ${verification.domains.join(', ') || 'nenhum'}.`,
+            },
+          });
+          return;
+        }
+      }
+
+      if (verifyOnly) {
+        throw new AppError('verifyOnly disponível apenas para Mailgun', 400);
+      }
+
+      await EmailService.sendTestEmail('api', String(testEmail).trim(), {
+        provider: provider as 'sendgrid' | 'mailgun' | 'ses' | 'brevo' | 'resend' | 'postmark',
+        apiKey,
+        domain: apiDomain,
+        mailgunRegion,
+        mailgunKeyType,
+        fromEmail,
+        fromName,
+      });
+
+      res.json({
+        success: true,
+        data: { success: true, message: 'E-mail de teste enviado com sucesso.' },
+        message: `E-mail de teste enviado para ${String(testEmail).trim()}.`,
+      });
+    } catch (error) {
       next(error);
     }
   }
