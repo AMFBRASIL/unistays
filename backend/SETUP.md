@@ -79,9 +79,7 @@ mkdir -p logs uploads
 npm run seed
 ```
 
-Isso criará:
-- Usuário admin: `admin@unistays.com` / `admin123`
-- Usuário gerente: `gerente@unistays.com` / `gerente123`
+Isso criará usuários iniciais via seed. **Altere as senhas imediatamente** após o primeiro login em ambientes reais.
 
 ### 6. Iniciar o Servidor
 
@@ -110,8 +108,8 @@ curl http://localhost:3000/health
 curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "admin@unistays.com",
-    "password": "admin123"
+    "email": "seu-email@exemplo.com",
+    "password": "sua-senha"
   }'
 ```
 

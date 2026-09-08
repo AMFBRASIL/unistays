@@ -261,4 +261,26 @@ export class AuthController {
       next(error);
     }
   }
+
+  async validateDiscountPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { password } = req.body as { password?: string };
+      const expected = process.env.RESERVATION_DISCOUNT_AUTH_PASSWORD?.trim();
+
+      if (!expected) {
+        throw new AppError('Senha de autorização de desconto não configurada no servidor', 503);
+      }
+
+      if (!password || password !== expected) {
+        throw new AppError('Senha incorreta', 403);
+      }
+
+      res.json({
+        success: true,
+        data: { valid: true },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }

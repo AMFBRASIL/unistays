@@ -225,6 +225,13 @@ class ApiClient {
     });
   }
 
+  async validateDiscountPassword(password: string): Promise<ApiResponse<{ valid: boolean }>> {
+    return this.request<{ valid: boolean }>('/auth/validate-discount-password', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    });
+  }
+
   async register(data: {
     email: string;
     password: string;

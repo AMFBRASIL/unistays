@@ -27,11 +27,22 @@ dist-ssr
 .env
 .env.*
 !.env.example
-!.env.development
+!.env.*.example
 backend/.env
 backend/.env.*
 !backend/.env.example
-backend/env.example
+
+# Certificados e chaves
+*.pem
+*.p12
+*.pfx
+*.key
+*.crt
+*.cer
+
+# Deploy webhook (token gerado no VPS)
+scripts/.deploy-webhook.env
+scripts/nginx-deploy-hook.conf
 
 # Banco: dumps, backups, SQL e migrations (manter só no VPS/local)
 BancoUnistays/

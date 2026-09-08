@@ -3,6 +3,17 @@ import path from 'path';
 
 config({ path: path.resolve(__dirname, '../../.env') });
 
+const DEFAULT_JWT_SECRET = 'change-this-secret-key';
+const DEFAULT_JWT_REFRESH_SECRET = 'change-this-refresh-secret';
+
+function requireProductionSecret(name: string, value: string | undefined, fallback: string): string {
+  const resolved = value || fallback;
+  if (process.env.NODE_ENV === 'production' && (!value || value === fallback)) {
+    throw new Error(`${name} must be set to a strong unique value in production`);
+  }
+  return resolved;
+}
+
 export const env = {
   // Server
   NODE_ENV: process.env.NODE_ENV || 'development',
@@ -19,10 +30,17 @@ export const env = {
   DB_LOGGING: process.env.DB_LOGGING === 'true',
 
   // JWT
-  JWT_SECRET: process.env.JWT_SECRET || 'change-this-secret-key',
+  JWT_SECRET: requireProductionSecret('JWT_SECRET', process.env.JWT_SECRET, DEFAULT_JWT_SECRET),
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
-  JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'change-this-refresh-secret',
+  JWT_REFRESH_SECRET: requireProductionSecret(
+    'JWT_REFRESH_SECRET',
+    process.env.JWT_REFRESH_SECRET,
+    DEFAULT_JWT_REFRESH_SECRET
+  ),
   JWT_REFRESH_EXPIRES_IN: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
+
+  /** Senha para autorizar descontos acima do limite nas reservas */
+  RESERVATION_DISCOUNT_AUTH_PASSWORD: process.env.RESERVATION_DISCOUNT_AUTH_PASSWORD || '',
 
   /** URL pública do frontend (ex.: https://app.seudominio.com) — usada no link do e-mail de redefinição de senha do hóspede */
   FRONTEND_PUBLIC_URL: (process.env.FRONTEND_PUBLIC_URL || process.env.VITE_APP_URL || 'http://localhost:5173').replace(/\/$/, ''),

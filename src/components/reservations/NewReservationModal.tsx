@@ -509,6 +509,33 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
   const [discountPasswordModalOpen, setDiscountPasswordModalOpen] = useState(false);
   const [discountPasswordInput, setDiscountPasswordInput] = useState("");
   const [discountValidated, setDiscountValidated] = useState(false);
+  const [isValidatingDiscountPassword, setIsValidatingDiscountPassword] = useState(false);
+
+  const handleValidateDiscountPassword = async () => {
+    if (!discountPasswordInput.trim()) {
+      toast.error("Digite a senha de autorização.");
+      return;
+    }
+
+    setIsValidatingDiscountPassword(true);
+    try {
+      const res = await api.validateDiscountPassword(discountPasswordInput);
+      if (res.success) {
+        setDiscountValidated(true);
+        setDiscountPasswordModalOpen(false);
+        setDiscountPasswordInput("");
+        toast.success("Desconto autorizado.");
+      } else {
+        toast.error(res.error?.message || "Senha incorreta.");
+        setDiscountPasswordInput("");
+      }
+    } catch {
+      toast.error("Não foi possível validar a senha.");
+      setDiscountPasswordInput("");
+    } finally {
+      setIsValidatingDiscountPassword(false);
+    }
+  };
 
   const [isSaving, setIsSaving] = useState(false);
   const [isSearchingGuests, setIsSearchingGuests] = useState(false);
@@ -4377,15 +4404,7 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  if (discountPasswordInput === "123456") {
-                    setDiscountValidated(true);
-                    setDiscountPasswordModalOpen(false);
-                    setDiscountPasswordInput("");
-                    toast.success("Desconto autorizado.");
-                  } else {
-                    toast.error("Senha incorreta.");
-                    setDiscountPasswordInput("");
-                  }
+                  void handleValidateDiscountPassword();
                 }
               }}
             />
@@ -4402,20 +4421,11 @@ export function NewReservationModal({ open, onOpenChange, initialData, mode = "c
               Cancelar
             </Button>
             <Button
-              onClick={() => {
-                if (discountPasswordInput === "123456") {
-                  setDiscountValidated(true);
-                  setDiscountPasswordModalOpen(false);
-                  setDiscountPasswordInput("");
-                  toast.success("Desconto autorizado.");
-                } else {
-                  toast.error("Senha incorreta.");
-                  setDiscountPasswordInput("");
-                }
-              }}
+              onClick={() => void handleValidateDiscountPassword()}
+              disabled={isValidatingDiscountPassword}
             >
               <Check className="h-4 w-4 mr-1" />
-              Validar
+              {isValidatingDiscountPassword ? "Validando..." : "Validar"}
             </Button>
           </div>
         </DialogContent>

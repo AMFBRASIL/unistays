@@ -39,9 +39,8 @@ npm run dev
 - Backend: `http://localhost:3000`
 - Login: `http://localhost:8080/login`
 
-### 4. Credenciais Padrão (após seed)
-- Email: `admin@unistays.com`
-- Senha: `admin123`
+### 4. Credenciais iniciais
+Após executar o seed do backend (`npm run seed`), use as credenciais configuradas localmente e **troque as senhas** antes de expor o ambiente.
 
 ## 📋 Fluxo de Autenticação
 
