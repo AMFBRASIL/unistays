@@ -929,9 +929,15 @@ export class SmtpConfigController {
         const configId = Number(body.configId);
         if (!isNaN(configId)) {
           const q = AppDataSource.createQueryRunner();
-          const [row] = await q.query('SELECT api_key FROM smtp_configurations WHERE id = ? LIMIT 1', [configId]);
+          const [row] = await q.query(
+            'SELECT api_key, api_domain FROM smtp_configurations WHERE id = ? LIMIT 1',
+            [configId]
+          );
           await q.release();
           apiKey = row?.api_key ? String(row.api_key).trim() : '';
+          if (!body.apiDomain && row?.api_domain) {
+            body.apiDomain = String(row.api_domain).trim();
+          }
         }
       }
 
@@ -964,7 +970,8 @@ export class SmtpConfigController {
           valid: true,
           region: result.region,
           domains: result.domains,
-          message: `API Key válida na região ${result.region.toUpperCase()}. Domínios: ${result.domains.join(', ') || 'nenhum'}.`,
+          keyType: result.keyType,
+          message: `API Key válida (${result.keyType === 'sending' ? 'envio' : 'conta'}, ${result.region.toUpperCase()}). Domínios: ${result.domains.join(', ') || 'nenhum'}.`,
         },
       });
     } catch (error) {

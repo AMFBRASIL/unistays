@@ -238,6 +238,15 @@ async function verifySendingKey(
   return { valid: false, attempts, keyType: 'sending' };
 }
 
+function isInvalidAccountKeyError(attempts: MailgunVerifyAttempt[]): boolean {
+  return (
+    attempts.length > 0 &&
+    attempts.every(
+      (a) => a.status === 401 && /invalid private key/i.test(String(a.message))
+    )
+  );
+}
+
 export async function verifyMailgunCredentials(
   apiKey: string,
   regionPreference: MailgunRegion = 'auto',
@@ -265,7 +274,7 @@ export async function verifyMailgunCredentials(
           {
             region: 'us',
             ok: false,
-            message: 'Domínio de envio é obrigatório para chaves de envio (Domain Sending Key)',
+            message: 'Domínio de envio é obrigatório para chaves de envio (ex.: unistays.com.br)',
           },
         ],
       };
@@ -273,7 +282,49 @@ export async function verifyMailgunCredentials(
     return verifySendingKey(key, domain, regionPreference);
   }
 
-  return verifyAccountKey(key, regionPreference);
+  const accountResult = await verifyAccountKey(key, regionPreference);
+  if (accountResult.valid) {
+    return accountResult;
+  }
+
+  if (isInvalidAccountKeyError(accountResult.attempts) && domain?.trim()) {
+    const sendingResult = await verifySendingKey(key, domain, regionPreference);
+    if (sendingResult.valid) {
+      return sendingResult;
+    }
+    return {
+      valid: false,
+      keyType: 'sending',
+      attempts: [
+        ...accountResult.attempts.map((a) => ({
+          ...a,
+          message: `Conta: ${a.message}`,
+        })),
+        ...sendingResult.attempts.map((a) => ({
+          ...a,
+          message: `Envio (${domain.trim()}): ${a.message}`,
+        })),
+      ],
+    };
+  }
+
+  if (isInvalidAccountKeyError(accountResult.attempts)) {
+    return {
+      valid: false,
+      keyType: 'account',
+      attempts: [
+        ...accountResult.attempts,
+        {
+          region: 'us',
+          ok: false,
+          message:
+            'Esta chave parece ser Sending API Key. Selecione "Chave de envio do domínio" e informe unistays.com.br.',
+        },
+      ],
+    };
+  }
+
+  return accountResult;
 }
 
 export function formatMailgunVerifyFailure(result: MailgunVerifyResult & { valid: false }): AppError {
@@ -324,7 +375,6 @@ export async function sendMailgunMessage(params: {
   text?: string;
   replyTo?: string | null;
 }): Promise<void> {
-  const keyType = params.keyType ?? 'account';
   const regionPreference = params.region ?? 'auto';
   const key = normalizeApiKey(params.apiKey);
 
@@ -332,52 +382,31 @@ export async function sendMailgunMessage(params: {
     throw new AppError('API Key do Mailgun é obrigatória', 400);
   }
 
-  if (keyType === 'sending') {
-    const sendDomain = params.domain?.trim();
-    if (!sendDomain) {
-      throw new AppError('Domínio de envio é obrigatório para chaves de envio Mailgun', 400);
-    }
+  const sendDomain =
+    params.domain?.trim() ||
+    (params.fromEmail?.includes('@') ? params.fromEmail.split('@')[1]?.trim() : undefined);
 
-    const verification = await verifySendingKey(key, sendDomain, regionPreference);
-    if (!verification.valid) {
-      throw formatMailgunVerifyFailure(verification);
-    }
+  const verification = await verifyMailgunCredentials(
+    key,
+    regionPreference,
+    params.keyType ?? 'account',
+    sendDomain
+  );
 
-    const mg = createMailgunSdk(key, verification.region);
-    const messageData: Record<string, unknown> = {
-      from: `"${params.fromName}" <${params.fromEmail}>`,
-      to: params.to,
-      subject: params.subject,
-      html: params.html,
-      text: params.text || params.subject,
-    };
-    if (params.replyTo) {
-      messageData['h:Reply-To'] = params.replyTo;
-    }
-
-    try {
-      await mg.messages.create(sendDomain, messageData);
-    } catch (error) {
-      throw formatMailgunError(error, verification.region);
-    }
-    return;
-  }
-
-  const verification = await verifyAccountKey(key, regionPreference);
   if (!verification.valid) {
     throw formatMailgunVerifyFailure(verification);
   }
 
   const mg = createMailgunSdk(key, verification.region);
-  let domains: Array<{ name: string; state?: string }>;
-  if (verification.domains.length > 0) {
-    domains = verification.domains.map((name) => ({ name, state: 'active' }));
-  } else {
-    const domainsResponse = await mg.domains.list({ limit: 100 });
-    domains = extractDomainItems(domainsResponse);
-  }
+  const messageDomain =
+    verification.keyType === 'sending'
+      ? (sendDomain || verification.domains[0])
+      : resolveMailgunDomain(
+          verification.domains.map((name) => ({ name, state: 'active' })),
+          params.domain,
+          params.fromEmail
+        );
 
-  const domain = resolveMailgunDomain(domains, params.domain, params.fromEmail);
   const messageData: Record<string, unknown> = {
     from: `"${params.fromName}" <${params.fromEmail}>`,
     to: params.to,
@@ -390,7 +419,7 @@ export async function sendMailgunMessage(params: {
   }
 
   try {
-    await mg.messages.create(domain, messageData);
+    await mg.messages.create(messageDomain, messageData);
   } catch (error) {
     throw formatMailgunError(error, verification.region);
   }

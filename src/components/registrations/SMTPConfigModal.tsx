@@ -180,8 +180,8 @@ const defaultApiConfig: APIConfig = {
   provider: "",
   apiKey: "",
   domain: "",
-  mailgunRegion: "auto",
-  mailgunKeyType: "account",
+  mailgunRegion: "us",
+  mailgunKeyType: "sending",
   fromEmail: "",
   fromName: "",
   dailyLimit: "10000",
@@ -415,6 +415,10 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
       const data = res.data as { region?: string; domains?: string[]; message?: string } | undefined;
       const ok = (res as { success?: boolean }).success === true;
       if (ok) {
+        const detectedKeyType = (data as { keyType?: "account" | "sending" })?.keyType;
+        if (detectedKeyType) {
+          setApiConfig((prev) => ({ ...prev, mailgunKeyType: detectedKeyType }));
+        }
         const msg =
           data?.message ??
           `API Key válida (${data?.region?.toUpperCase() ?? "?"})` +
@@ -895,8 +899,9 @@ export function SMTPConfigModal({ open, onOpenChange, initialPropertyId }: SMTPC
                     setApiConfig({
                       ...apiConfig,
                       provider: providerId,
-                      mailgunKeyType: providerId === "mailgun" ? apiConfig.mailgunKeyType : "account",
-                      mailgunRegion: providerId === "mailgun" ? apiConfig.mailgunRegion : "auto",
+                      mailgunKeyType: providerId === "mailgun" ? "sending" : "account",
+                      mailgunRegion: providerId === "mailgun" ? "us" : "auto",
+                      domain: providerId === "mailgun" && !apiConfig.domain ? "unistays.com.br" : apiConfig.domain,
                     })
                   }
                   showPassword={showPassword}
