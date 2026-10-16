@@ -65,7 +65,7 @@ import {
   serializeMailgunSettings,
 } from "@/components/registrations/smtp/mailgunSettings";
 import { SmtpServerConnectionPanel } from "@/components/registrations/smtp/SmtpServerConnectionPanel";
-import type { ApiProviderConfig, MailgunVerifyState, API_PROVIDERS } from "@/components/registrations/smtp/types";
+import { API_PROVIDERS, type ApiProviderConfig, type MailgunVerifyState } from "@/components/registrations/smtp/types";
 
 interface SMTPConfigModalProps {
   open: boolean;

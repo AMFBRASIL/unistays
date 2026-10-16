@@ -62,7 +62,11 @@ import {
     LayoutDashboard,
     Search,
     Globe,
-    Coins
+    Coins,
+    Key,
+    Eye,
+    EyeOff,
+    AlertCircle,
 } from "lucide-react";
 
 
@@ -108,6 +112,8 @@ interface PropertyData {
         taxRate?: number;
         serviceFee?: number;
     };
+    wifiNetwork?: string;
+    wifiPassword?: string;
     status: "active" | "maintenance" | "inactive";
 }
 
@@ -208,7 +214,8 @@ const steps = [
     { id: 3, title: "Contato", icon: Phone, description: "Canais e visibilidade" },
     { id: 4, title: "Fotos", icon: ImageIcon, description: "Galeria de imagens" },
     { id: 5, title: "Serviços", icon: Sparkles, description: "Amenidades e limpeza" },
-    { id: 6, title: "Tarifas", icon: DollarSign, description: "Preços e regras" },
+    { id: 6, title: "Wi-Fi", icon: Wifi, description: "Rede e senha para hóspedes" },
+    { id: 7, title: "Tarifas", icon: DollarSign, description: "Preços e regras" },
 ];
 
 export default function PropertyModal({ open, onOpenChange, property, onSuccess }: PropertyModalProps) {
@@ -217,6 +224,7 @@ export default function PropertyModal({ open, onOpenChange, property, onSuccess 
     const [currentStep, setCurrentStep] = useState(1);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isUploading, setIsUploading] = useState(false);
+    const [showWifiPassword, setShowWifiPassword] = useState(false);
 
     // Form State
     const [formData, setFormData] = useState<PropertyData>({
@@ -241,7 +249,9 @@ export default function PropertyModal({ open, onOpenChange, property, onSuccess 
         email: "",
         phone: "",
         website: "",
-        settings: { taxRate: 5, serviceFee: 0 }
+        settings: { taxRate: 5, serviceFee: 0 },
+        wifiNetwork: "",
+        wifiPassword: "",
     });
 
     const [hasOwner, setHasOwner] = useState(false);
@@ -287,9 +297,12 @@ export default function PropertyModal({ open, onOpenChange, property, onSuccess 
                     settings: {
                         taxRate: (property as any).settings?.taxRate || 5,
                         serviceFee: (property as any).settings?.serviceFee || 0
-                    }
+                    },
+                    wifiNetwork: (property as any).wifiNetwork || (property as any).wifi_network || "",
+                    wifiPassword: (property as any).wifiPassword || (property as any).wifi_password || "",
                 });
                 setHasOwner(!!property.owner);
+                setShowWifiPassword(false);
                 setCurrentStep(2);
             } else {
                 // Reset for new property
@@ -314,9 +327,12 @@ export default function PropertyModal({ open, onOpenChange, property, onSuccess 
                     email: "",
                     phone: "",
                     website: "",
-                    settings: { taxRate: 5, serviceFee: 0 }
+                    settings: { taxRate: 5, serviceFee: 0 },
+                    wifiNetwork: "",
+                    wifiPassword: "",
                 });
                 setHasOwner(false);
+                setShowWifiPassword(false);
                 setCurrentStep(1);
             }
         }
@@ -438,6 +454,8 @@ export default function PropertyModal({ open, onOpenChange, property, onSuccess 
                 email: data.email,
                 phone: data.phone,
                 website: data.website,
+                wifiNetwork: data.wifiNetwork || null,
+                wifiPassword: data.wifiPassword || null,
             };
 
             return api.createProperty(payload);
@@ -487,6 +505,8 @@ export default function PropertyModal({ open, onOpenChange, property, onSuccess 
                 email: data.email,
                 phone: data.phone,
                 website: data.website,
+                wifiNetwork: data.wifiNetwork || null,
+                wifiPassword: data.wifiPassword || null,
             };
             return api.updateProperty(Number(property?.id), payload);
         },
@@ -1058,8 +1078,94 @@ export default function PropertyModal({ open, onOpenChange, property, onSuccess 
                                         </div>
                                     )}
 
-                                    {/* STEP 6: RATES & RULES */}
+                                    {/* STEP 6: WIFI */}
                                     {currentStep === 6 && (
+                                        <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+                                            <Card className="border-blue-500/20 shadow-lg bg-gradient-to-br from-blue-500/5 to-transparent">
+                                                <CardContent className="p-8 space-y-6">
+                                                    <div>
+                                                        <h3 className="text-xl font-bold mb-2 flex items-center gap-2 text-blue-600 dark:text-blue-400">
+                                                            <Wifi className="w-6 h-6" /> Rede Wi-Fi da propriedade
+                                                        </h3>
+                                                        <p className="text-muted-foreground">
+                                                            Informe a rede e a senha usadas pelos hóspedes. Esses dados alimentam os templates de email
+                                                            com as variáveis <code className="bg-muted px-1 rounded text-xs">[wifi_network]</code> e{" "}
+                                                            <code className="bg-muted px-1 rounded text-xs">[wifi_password]</code>.
+                                                        </p>
+                                                    </div>
+
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                        <div className="space-y-2">
+                                                            <Label className="text-xs text-muted-foreground uppercase tracking-wide">
+                                                                Nome da Rede (SSID)
+                                                            </Label>
+                                                            <div className="relative">
+                                                                <Wifi className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                                                <Input
+                                                                    value={formData.wifiNetwork || ""}
+                                                                    onChange={(e) =>
+                                                                        setFormData({ ...formData, wifiNetwork: e.target.value })
+                                                                    }
+                                                                    placeholder="Ex: Hotel_Guest"
+                                                                    className="pl-9 h-12"
+                                                                />
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="space-y-2">
+                                                            <Label className="text-xs text-muted-foreground uppercase tracking-wide">
+                                                                Senha do Wi-Fi
+                                                            </Label>
+                                                            <div className="relative">
+                                                                <Key className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                                                <Input
+                                                                    type={showWifiPassword ? "text" : "password"}
+                                                                    value={formData.wifiPassword || ""}
+                                                                    onChange={(e) =>
+                                                                        setFormData({ ...formData, wifiPassword: e.target.value })
+                                                                    }
+                                                                    placeholder="Senha da rede"
+                                                                    className="pl-9 pr-10 h-12"
+                                                                />
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setShowWifiPassword((prev) => !prev)}
+                                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                                                                >
+                                                                    {showWifiPassword ? (
+                                                                        <EyeOff className="h-4 w-4" />
+                                                                    ) : (
+                                                                        <Eye className="h-4 w-4" />
+                                                                    )}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20">
+                                                        <div className="flex items-start gap-3">
+                                                            <AlertCircle className="h-5 w-5 text-blue-400 mt-0.5 shrink-0" />
+                                                            <div>
+                                                                <h4 className="font-medium text-sm">Variáveis nos templates</h4>
+                                                                <p className="text-xs text-muted-foreground mt-1">
+                                                                    Use estas variáveis nos templates de email para incluir o Wi-Fi automaticamente:
+                                                                </p>
+                                                                <div className="flex flex-wrap gap-2 mt-2">
+                                                                    <Badge variant="outline" className="font-mono text-xs">[wifi_network]</Badge>
+                                                                    <Badge variant="outline" className="font-mono text-xs">[wifi_password]</Badge>
+                                                                    <Badge variant="outline" className="font-mono text-xs">[senha-wifi]</Badge>
+                                                                    <Badge variant="outline" className="font-mono text-xs">[hotel_name]</Badge>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </CardContent>
+                                            </Card>
+                                        </div>
+                                    )}
+
+                                    {/* STEP 7: RATES & RULES */}
+                                    {currentStep === 7 && (
                                         <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-300">
                                             <Card className="border-emerald-500/20 shadow-lg bg-gradient-to-br from-emerald-500/5 to-transparent">
                                                 <CardContent className="p-8">

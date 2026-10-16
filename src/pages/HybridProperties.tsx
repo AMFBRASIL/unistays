@@ -98,6 +98,8 @@ interface Property {
     serviceFee?: number;
     [key: string]: any;
   };
+  wifiNetwork?: string;
+  wifiPassword?: string;
 }
 
 interface Contract {
@@ -329,7 +331,9 @@ const mapPropertyFromBackend = (property: any): Property => {
       ...property.settings,
       taxRate: property.settings?.taxRate,
       serviceFee: property.settings?.serviceFee,
-    }
+    },
+    wifiNetwork: property.wifiNetwork || property.wifi_network || "",
+    wifiPassword: property.wifiPassword || property.wifi_password || "",
   };
 };
 

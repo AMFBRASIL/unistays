@@ -83,7 +83,6 @@ import {
   Gift,
   AlertCircle,
   Loader2,
-  Wifi,
 } from "lucide-react";
 
 interface SettingsSection {
@@ -95,7 +94,6 @@ interface SettingsSection {
 
 const settingsSections: SettingsSection[] = [
   { id: "general", icon: Building2, label: "Geral", description: "Informações da empresa" },
-  { id: "wifi", icon: Wifi, label: "Wi-Fi", description: "Rede e senha por propriedade" },
   { id: "currency", icon: Coins, label: "Moeda", description: "Configurações de moeda" },
   { id: "translation", icon: Languages, label: "Tradução", description: "Idiomas e traduções" },
   { id: "smtp", icon: Mail, label: "Email (SMTP)", description: "Configurações de envio" },
@@ -106,200 +104,6 @@ const settingsSections: SettingsSection[] = [
   { id: "backup", icon: Database, label: "Backup", description: "Dados e restauração" },
   { id: "appearance", icon: Palette, label: "Aparência", description: "Tema e visual" },
 ];
-
-interface WifiProperty {
-  id: number;
-  name: string;
-  city: string | null;
-  wifiNetwork: string | null;
-  wifiPassword: string | null;
-  wifi_network?: string | null;
-  wifi_password?: string | null;
-}
-
-function WifiSettings() {
-  const [properties, setProperties] = useState<WifiProperty[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [savingId, setSavingId] = useState<number | null>(null);
-  const [wifiData, setWifiData] = useState<Record<number, { network: string; password: string }>>({});
-  const [showPasswords, setShowPasswords] = useState<Record<number, boolean>>({});
-
-  useEffect(() => {
-    loadProperties();
-  }, []);
-
-  const loadProperties = async () => {
-    setIsLoading(true);
-    try {
-      const res = await api.getProperties();
-      if (res.success && res.data?.properties) {
-        const props = res.data.properties as WifiProperty[];
-        setProperties(props);
-        const initial: Record<number, { network: string; password: string }> = {};
-        props.forEach(p => {
-          initial[p.id] = {
-            network: p.wifiNetwork || p.wifi_network || '',
-            password: p.wifiPassword || p.wifi_password || '',
-          };
-        });
-        setWifiData(initial);
-      }
-    } catch {
-      toast.error('Erro ao carregar propriedades');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleSave = async (propertyId: number) => {
-    const data = wifiData[propertyId];
-    if (!data) return;
-    setSavingId(propertyId);
-    try {
-      const res = await api.updateProperty(propertyId, {
-        wifiNetwork: data.network,
-        wifiPassword: data.password,
-      });
-      if (res.success) {
-        toast.success('Wi-Fi atualizado com sucesso!');
-      } else {
-        toast.error('Erro ao salvar Wi-Fi');
-      }
-    } catch {
-      toast.error('Erro ao salvar Wi-Fi');
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  const updateField = (propertyId: number, field: 'network' | 'password', value: string) => {
-    setWifiData(prev => ({
-      ...prev,
-      [propertyId]: { ...prev[propertyId], [field]: value },
-    }));
-  };
-
-  return (
-    <Card className="bg-card/50 backdrop-blur-xl border-white/10">
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-blue-500/10">
-            <Wifi className="h-5 w-5 text-blue-400" />
-          </div>
-          <div>
-            <CardTitle>Configurações de Wi-Fi</CardTitle>
-            <CardDescription>Configure a rede e senha Wi-Fi de cada propriedade. Essas informações são usadas nos templates de email com as variáveis <code className="bg-muted px-1 rounded text-xs">[wifi_password]</code> e <code className="bg-muted px-1 rounded text-xs">[wifi_network]</code>.</CardDescription>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        ) : properties.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground text-sm">
-            Nenhuma propriedade cadastrada.
-          </div>
-        ) : (
-          properties.map((property, index) => {
-            const data = wifiData[property.id] || { network: '', password: '' };
-            const isEven = index % 2 === 0;
-            const isSaving = savingId === property.id;
-            const showPw = showPasswords[property.id] || false;
-            return (
-              <div
-                key={property.id}
-                className={cn(
-                  "p-5 rounded-xl border transition-all",
-                  isEven ? "bg-muted/30 border-border/60" : "bg-card/80 border-border/40"
-                )}
-              >
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="p-2 rounded-lg bg-emerald-500/10">
-                    <Building2 className="h-4 w-4 text-emerald-500" />
-                  </div>
-                  <div>
-                    <h4 className="font-semibold text-sm">{property.name}</h4>
-                    {property.city && <p className="text-xs text-muted-foreground">{property.city}</p>}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground uppercase tracking-wide">Nome da Rede (SSID)</Label>
-                    <div className="relative">
-                      <Wifi className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        value={data.network}
-                        onChange={(e) => updateField(property.id, 'network', e.target.value)}
-                        placeholder="Ex: Hotel_Guest"
-                        className="pl-9 bg-background/50"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground uppercase tracking-wide">Senha do Wi-Fi</Label>
-                    <div className="relative">
-                      <Key className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        type={showPw ? 'text' : 'password'}
-                        value={data.password}
-                        onChange={(e) => updateField(property.id, 'password', e.target.value)}
-                        placeholder="Senha da rede"
-                        className="pl-9 pr-10 bg-background/50"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPasswords(prev => ({ ...prev, [property.id]: !showPw }))}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex justify-end mt-4">
-                  <Button
-                    size="sm"
-                    onClick={() => handleSave(property.id)}
-                    disabled={isSaving}
-                    className="bg-gradient-to-r from-blue-500 to-cyan-500 hover:opacity-90"
-                  >
-                    {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Check className="h-4 w-4 mr-2" />}
-                    Salvar Wi-Fi
-                  </Button>
-                </div>
-              </div>
-            );
-          })
-        )}
-
-        <Separator />
-
-        <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 text-blue-400 mt-0.5" />
-            <div>
-              <h4 className="font-medium text-sm text-foreground">Variáveis disponíveis nos templates</h4>
-              <p className="text-xs text-muted-foreground mt-1">
-                Use estas variáveis nos templates de email para incluir as informações de Wi-Fi automaticamente:
-              </p>
-              <div className="flex flex-wrap gap-2 mt-2">
-                <Badge variant="outline" className="font-mono text-xs bg-background/50">[wifi_network]</Badge>
-                <Badge variant="outline" className="font-mono text-xs bg-background/50">[wifi_password]</Badge>
-                <Badge variant="outline" className="font-mono text-xs bg-background/50">[senha-wifi]</Badge>
-                <Badge variant="outline" className="font-mono text-xs bg-background/50">[hotel_name]</Badge>
-              </div>
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function Settings() {
   const [activeSection, setActiveSection] = useState("general");
@@ -1547,9 +1351,6 @@ export default function Settings() {
                 </CardContent>
               </Card>
             )}
-
-            {/* Wi-Fi Settings */}
-            {activeSection === "wifi" && <WifiSettings />}
 
             {/* Email Templates */}
             {activeSection === "email-templates" && (
