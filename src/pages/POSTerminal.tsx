@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -38,11 +38,41 @@ import {
   Warehouse,
   Palmtree,
   Loader2,
+  Ban,
+  Hash,
+  CalendarClock,
+  Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { printHtmlDocument } from "@/lib/printHtml";
+import {
+  findOpenComanda,
+  loadOpenComandas,
+  openComandaItemsCount,
+  openComandaTotal,
+  removeOpenComanda,
+  upsertOpenComandaItems,
+  type OpenComanda,
+} from "@/lib/posOpenComandas";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 
 interface Product {
@@ -62,17 +92,33 @@ interface CartItem {
   quantity: number;
 }
 
+interface PosOrderLineItem {
+  name: string;
+  quantity: number;
+}
+
 interface RecentOrder {
   id: number;
   transactionNumber: string;
   time: string;
+  createdAt: string;
   unit: string | null;
+  comanda: string | null;
   guest: string | null;
   total: number;
   items: number;
-  status: "pending" | "completed" | "cancelled";
+  lineItems: PosOrderLineItem[];
+  status: "pending" | "completed" | "cancelled" | "refunded";
   propertyType: string;
+  propertyName: string | null;
+  paymentMethodName: string | null;
+  paymentLabel: string | null;
+  description: string;
+  notes: string | null;
+  currency: string;
 }
+
+type OrderTargetMode = "unit" | "comanda";
 
 type PropertyType = "hotel" | "apart-hotel" | "loft" | "temporada";
 
@@ -89,7 +135,45 @@ const statusConfig = {
   pending: { label: "Pendente", color: "bg-amber-500/10 text-amber-500 border-amber-500/20" },
   completed: { label: "Concluído", color: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" },
   cancelled: { label: "Cancelado", color: "bg-red-500/10 text-red-500 border-red-500/20" },
+  refunded: { label: "Estornado", color: "bg-slate-500/10 text-slate-400 border-slate-500/20" },
 };
+
+function parsePosOrderDescription(desc: string): {
+  unit: string | null;
+  comanda: string | null;
+  guest: string | null;
+  lineItems: PosOrderLineItem[];
+} {
+  const unitMatch = desc.match(/unidade:\s*([^\-|]+)/i);
+  const comandaMatch = desc.match(/comanda:\s*([^\-|]+)/i);
+  const guestMatch = desc.match(/(?:h[oó]spede|nome):\s*([^\-|]+)/i);
+  const afterDash = desc.includes(" - ") ? desc.split(" - ").slice(1).join(" - ") : desc;
+  const itemsChunk = afterDash.split(" | ")[0] ?? "";
+  const lineItems: PosOrderLineItem[] = itemsChunk
+    .split(",")
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const m = chunk.match(/^(.*)\s+x(\d+)\s*$/i);
+      if (m) {
+        return { name: m[1].trim(), quantity: Number(m[2]) || 1 };
+      }
+      return { name: chunk, quantity: 1 };
+    });
+
+  return {
+    unit: unitMatch ? unitMatch[1].trim() : null,
+    comanda: comandaMatch ? comandaMatch[1].trim() : null,
+    guest: guestMatch ? guestMatch[1].trim() : null,
+    lineItems,
+  };
+}
+
+function extractPaymentLabelFromNotes(notes: string | null | undefined): string | null {
+  if (!notes) return null;
+  const m = notes.match(/pagamento:\s*([^|]+)/i);
+  return m ? m[1].trim() : null;
+}
 
 const getPropertyBadgeColor = (type: string) => {
   switch (type) {
@@ -167,7 +251,9 @@ export default function POSTerminal() {
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [selectedPropertyType, setSelectedPropertyType] = useState<PropertyType>("hotel");
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [orderTargetMode, setOrderTargetMode] = useState<OrderTargetMode>("unit");
   const [unit, setUnit] = useState("");
+  const [comandaNumber, setComandaNumber] = useState("");
   const [guestName, setGuestName] = useState("");
   const [showPayment, setShowPayment] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
@@ -192,10 +278,37 @@ export default function POSTerminal() {
   const [unitOccupantsHint, setUnitOccupantsHint] = useState<string | null>(null);
   const [resolvedUnitDisplay, setResolvedUnitDisplay] = useState<string | null>(null);
   const [clientConfirmedUnitCharge, setClientConfirmedUnitCharge] = useState(false);
-  const recentOrdersScrollRef = useRef<HTMLDivElement | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<RecentOrder | null>(null);
+  const [orderDetailOpen, setOrderDetailOpen] = useState(false);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [isCancellingOrder, setIsCancellingOrder] = useState(false);
+  const [ordersPage, setOrdersPage] = useState(0);
+  const [printModalOpen, setPrintModalOpen] = useState(false);
+  const [printSource, setPrintSource] = useState<"cart" | "comanda">("cart");
+  const [openComandaPreview, setOpenComandaPreview] = useState<OpenComanda | null>(null);
+  const [payingOpenComandaNumber, setPayingOpenComandaNumber] = useState<string | null>(null);
+  const [openComandasTick, setOpenComandasTick] = useState(0);
+  const [payComandaModalOpen, setPayComandaModalOpen] = useState(false);
+  const [payComandaLookup, setPayComandaLookup] = useState("");
+  const [payComandaSelected, setPayComandaSelected] = useState<OpenComanda | null>(null);
+  const RECENT_ORDERS_PAGE_SIZE = 6;
 
   const currentProperty = propertyTypes.find(p => p.id === selectedPropertyType) || propertyTypes[0];
   const selectedProperty = useMemo(() => properties.find((p) => p.id === selectedPropertyId) || null, [properties, selectedPropertyId]);
+
+  const activeOpenComanda = useMemo(() => {
+    if (!selectedPropertyId || orderTargetMode !== "comanda" || !comandaNumber.trim()) return null;
+    void openComandasTick;
+    return findOpenComanda(selectedPropertyId, comandaNumber);
+  }, [selectedPropertyId, orderTargetMode, comandaNumber, openComandasTick]);
+
+  const allOpenComandas = useMemo(() => {
+    if (!selectedPropertyId) return [] as OpenComanda[];
+    void openComandasTick;
+    return loadOpenComandas(selectedPropertyId);
+  }, [selectedPropertyId, openComandasTick]);
+
+  const openComandasCount = allOpenComandas.length;
 
   useEffect(() => {
     const load = async () => {
@@ -298,30 +411,43 @@ export default function POSTerminal() {
         search: "POS Terminal",
       });
       const list = ((res.data as { transactions?: unknown[] } | undefined)?.transactions ?? []) as Array<Record<string, unknown>>;
-      const mapped: RecentOrder[] = list.slice(0, 8).map((t) => {
+      const mapped: RecentOrder[] = list.slice(0, 30).map((t) => {
         const desc = String(t.description ?? "");
-        const unitMatch = desc.match(/unidade:\s*([^\-|]+)/i);
-        const guestMatch = desc.match(/h[oó]spede:\s*([^\-|]+)/i);
-        const itemsChunk = desc.split(" - ")[1] ?? "";
-        const itemsCount = itemsChunk
-          ? itemsChunk.split(",").map((x) => x.trim()).filter(Boolean).length
-          : 0;
+        const notes = t.notes != null ? String(t.notes) : null;
+        const parsed = parsePosOrderDescription(desc);
+        const createdAt = String(t.createdAt ?? new Date().toISOString());
+        const statusRaw = String(t.status ?? "pending");
+        const status =
+          statusRaw === "cancelled" || statusRaw === "refunded" || statusRaw === "pending" || statusRaw === "completed"
+            ? statusRaw
+            : "pending";
         return {
           id: Number(t.id),
           transactionNumber: String(t.transactionNumber ?? `TRX-${t.id}`),
-          time: new Date(String(t.createdAt ?? new Date())).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-          unit: unitMatch ? unitMatch[1].trim() : null,
-          guest: guestMatch ? guestMatch[1].trim() : null,
+          time: new Date(createdAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+          createdAt,
+          unit: parsed.unit,
+          comanda: parsed.comanda,
+          guest: parsed.guest,
           total: Number(t.amount ?? 0),
-          items: itemsCount,
-          status: (String(t.status ?? "pending") as "pending" | "completed" | "cancelled"),
+          items: parsed.lineItems.length,
+          lineItems: parsed.lineItems,
+          status,
           propertyType: selectedPropertyType,
+          propertyName: t.propertyName ? String(t.propertyName) : selectedProperty?.name ?? null,
+          paymentMethodName: t.paymentMethodName ? String(t.paymentMethodName) : null,
+          paymentLabel: extractPaymentLabelFromNotes(notes),
+          description: desc,
+          notes,
+          currency: String(t.currency ?? "BRL"),
         };
       });
       setRecentOrders(mapped);
+      setOrdersPage(0);
     } catch (error) {
       console.error(error);
       setRecentOrders([]);
+      setOrdersPage(0);
     }
   };
 
@@ -331,9 +457,21 @@ export default function POSTerminal() {
 
   useEffect(() => {
     setClientConfirmedUnitCharge(false);
+    setUnit("");
+    setComandaNumber("");
+    setGuestName("");
+    setOrderTargetMode("unit");
   }, [selectedPropertyId]);
 
   useEffect(() => {
+    if (orderTargetMode !== "unit") {
+      setUnitOccupants([]);
+      setUnitOccupantsHint(null);
+      setResolvedUnitDisplay(null);
+      setUnitOccupantsLoading(false);
+      return;
+    }
+
     const raw = unit.trim();
     if (!selectedPropertyId || !raw) {
       setUnitOccupants([]);
@@ -365,6 +503,7 @@ export default function POSTerminal() {
         const uname = matched.name ? String(matched.name) : "";
         setResolvedUnitDisplay(uname ? `${num} — ${uname}` : num);
 
+        // Estadia "em uso" hoje: check-in <= hoje <= check-out e status checked_in ou confirmed
         const resvRes = await api.getReservations({
           propertyId: selectedPropertyId,
           unitId,
@@ -402,21 +541,27 @@ export default function POSTerminal() {
     }, 450);
 
     return () => window.clearTimeout(handle);
-  }, [unit, selectedPropertyId]);
+  }, [unit, selectedPropertyId, orderTargetMode]);
 
   const filteredProducts = products.filter((p) => {
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = selectedCategory === "all" || String(p.categoryId ?? "") === selectedCategory;
     return matchesSearch && matchesCategory;
   });
-  const filteredOrders = recentOrders;
   const getCartQuantity = (productId: number) =>
     cart.find((item) => item.product.id === productId)?.quantity ?? 0;
 
-  const scrollRecentOrders = (direction: "left" | "right") => {
-    const el = recentOrdersScrollRef.current;
-    if (!el) return;
-    el.scrollBy({ left: direction === "right" ? 320 : -320, behavior: "smooth" });
+  const ordersPageCount = Math.max(1, Math.ceil(recentOrders.length / RECENT_ORDERS_PAGE_SIZE));
+  const visibleRecentOrders = recentOrders.slice(
+    ordersPage * RECENT_ORDERS_PAGE_SIZE,
+    ordersPage * RECENT_ORDERS_PAGE_SIZE + RECENT_ORDERS_PAGE_SIZE
+  );
+
+  const goRecentOrdersPage = (direction: "left" | "right") => {
+    setOrdersPage((prev) => {
+      if (direction === "left") return Math.max(0, prev - 1);
+      return Math.min(ordersPageCount - 1, prev + 1);
+    });
   };
 
   const addToCart = (product: Product) => {
@@ -466,10 +611,396 @@ export default function POSTerminal() {
     setCart((prev) => prev.filter((item) => item.product.id !== productId));
   };
 
-  const clearCart = () => {
+  const clearCart = (options?: { keepComandaTarget?: boolean }) => {
     setCart([]);
+    setClientConfirmedUnitCharge(false);
+    setPayingOpenComandaNumber(null);
+    if (!options?.keepComandaTarget) {
+      setUnit("");
+      setComandaNumber("");
+      setGuestName("");
+    }
+  };
+
+  const refreshOpenComandas = () => setOpenComandasTick((n) => n + 1);
+
+  const buildComandaPrintHtml = (opts: {
+    title: string;
+    comanda?: string | null;
+    unit?: string | null;
+    guest?: string | null;
+    items: Array<{ name: string; quantity: number; price: number }>;
+    footerNote?: string;
+  }) => {
+    const total = opts.items.reduce((s, i) => s + i.price * i.quantity, 0);
+    const when = new Date().toLocaleString("pt-BR");
+    const rows = opts.items
+      .map(
+        (i) => `
+        <tr>
+          <td style="padding:6px 0;border-bottom:1px dashed #ddd;">${i.name}</td>
+          <td style="padding:6px 0;border-bottom:1px dashed #ddd;text-align:center;">${i.quantity}</td>
+          <td style="padding:6px 0;border-bottom:1px dashed #ddd;text-align:right;">R$ ${(i.price * i.quantity).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</td>
+        </tr>`
+      )
+      .join("");
+
+    return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>${opts.title}</title>
+  <style>
+    @page { margin: 8mm; size: 80mm auto; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #111; margin: 0; padding: 8px; font-size: 12px; }
+    h1 { font-size: 16px; margin: 0 0 4px; text-align: center; }
+    .muted { color: #555; font-size: 11px; text-align: center; margin-bottom: 12px; }
+    .meta { margin: 10px 0; line-height: 1.45; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; border-bottom: 1px solid #111; padding-bottom: 4px; font-size: 11px; }
+    .total { margin-top: 12px; font-size: 15px; font-weight: 700; display: flex; justify-content: space-between; }
+    .footer { margin-top: 16px; text-align: center; font-size: 11px; color: #444; }
+  </style>
+</head>
+<body>
+  <h1>${opts.title}</h1>
+  <div class="muted">${selectedProperty?.name || "UniStays"} · ${when}</div>
+  <div class="meta">
+    ${opts.comanda ? `<div><strong>Comanda:</strong> ${opts.comanda}</div>` : ""}
+    ${opts.unit ? `<div><strong>${currentProperty.unitLabel}:</strong> ${opts.unit}</div>` : ""}
+    ${opts.guest ? `<div><strong>Cliente:</strong> ${opts.guest}</div>` : ""}
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th style="text-align:center;">Qtd</th>
+        <th style="text-align:right;">Valor</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="total">
+    <span>TOTAL</span>
+    <span>R$ ${total.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+  </div>
+  <div class="footer">${opts.footerNote || "Obrigado!"}</div>
+</body>
+</html>`;
+  };
+
+  const openPrintModal = (source: "cart" | "comanda" = "cart") => {
+    if (source === "cart") {
+      if (cart.length === 0) {
+        toast.error("Adicione itens ao carrinho para imprimir a comanda.");
+        return;
+      }
+      setPrintSource("cart");
+      setOpenComandaPreview(null);
+      setPrintModalOpen(true);
+      return;
+    }
+    if (!selectedPropertyId || !comandaNumber.trim()) {
+      toast.error("Informe o número da comanda para imprimir.");
+      return;
+    }
+    const open = findOpenComanda(selectedPropertyId, comandaNumber);
+    if (!open || open.items.length === 0) {
+      toast.error("Não há itens nesta comanda aberta.");
+      return;
+    }
+    setPrintSource("comanda");
+    setOpenComandaPreview(open);
+    setPrintModalOpen(true);
+  };
+
+  const handlePrintComanda = () => {
+    const items =
+      printSource === "comanda" && openComandaPreview
+        ? openComandaPreview.items.map((i) => ({
+            name: i.name,
+            quantity: i.quantity,
+            price: i.price,
+          }))
+        : cart.map((i) => ({
+            name: i.product.name,
+            quantity: i.quantity,
+            price: i.product.price,
+          }));
+
+    if (items.length === 0) {
+      toast.error("Nada para imprimir.");
+      return;
+    }
+
+    const html = buildComandaPrintHtml({
+      title: "COMANDA PDV",
+      comanda:
+        printSource === "comanda"
+          ? openComandaPreview?.number
+          : orderTargetMode === "comanda"
+            ? comandaNumber || null
+            : null,
+      unit: orderTargetMode === "unit" ? unit || null : null,
+      guest:
+        printSource === "comanda"
+          ? openComandaPreview?.guestName || guestName || null
+          : guestName || null,
+      items,
+      footerNote:
+        printSource === "comanda"
+          ? "Comanda em aberto — pagamento ao final"
+          : "Prévia do pedido",
+    });
+
+    const ok = printHtmlDocument(html);
+    if (ok) toast.success("Enviando comanda para impressão...");
+    else toast.error("Não foi possível abrir a impressão.");
+  };
+
+  const handleAddCartToComanda = () => {
+    if (!selectedPropertyId) {
+      toast.error("Selecione uma propriedade.");
+      return;
+    }
+    if (orderTargetMode !== "comanda") {
+      toast.error("Ative o modo Day-use / Comanda para lançar itens sem pagar agora.");
+      return;
+    }
+    if (!comandaNumber.trim()) {
+      toast.error("Informe o número da comanda.");
+      return;
+    }
+    if (cart.length === 0) {
+      toast.error("Adicione itens ao carrinho.");
+      return;
+    }
+
+    const saved = upsertOpenComandaItems(
+      selectedPropertyId,
+      comandaNumber,
+      guestName,
+      cart.map((item) => ({
+        productId: item.product.id,
+        name: item.product.name,
+        price: item.product.price,
+        quantity: item.quantity,
+      }))
+    );
+    refreshOpenComandas();
+    clearCart({ keepComandaTarget: true });
+    setShowPayment(false);
+    toast.success(`Itens adicionados à comanda ${saved.number}`, {
+      description: `Total em aberto: R$ ${openComandaTotal(saved).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+    });
+  };
+
+  const buildCartFromOpenComanda = (open: OpenComanda): CartItem[] => {
+    const productMap = new Map(products.map((p) => [p.id, p]));
+    const nextCart: CartItem[] = [];
+    for (const item of open.items) {
+      const product = productMap.get(item.productId);
+      if (product) {
+        nextCart.push({ product, quantity: item.quantity });
+      } else {
+        nextCart.push({
+          product: {
+            id: item.productId,
+            name: item.name,
+            price: item.price,
+            promotionalPrice: null,
+            isPromotionActive: false,
+            stockQuantity: 9999,
+            category: null,
+            categoryId: null,
+          },
+          quantity: item.quantity,
+        });
+      }
+    }
+    return nextCart;
+  };
+
+  const prepareOpenComandaForPayment = (open: OpenComanda) => {
+    setCart(buildCartFromOpenComanda(open));
+    setComandaNumber(open.number);
+    setGuestName(open.guestName || "");
+    setOrderTargetMode("comanda");
+    setPayingOpenComandaNumber(open.number);
     setUnit("");
-    setGuestName("");
+    setClientConfirmedUnitCharge(false);
+  };
+
+  const openPayComandaModal = (prefill?: string) => {
+    refreshOpenComandas();
+    const initial = (prefill ?? comandaNumber).trim();
+    setPayComandaLookup(initial);
+    if (selectedPropertyId && initial) {
+      setPayComandaSelected(findOpenComanda(selectedPropertyId, initial));
+    } else {
+      setPayComandaSelected(null);
+    }
+    setPayComandaModalOpen(true);
+  };
+
+  const handleLookupPayComanda = () => {
+    if (!selectedPropertyId) {
+      toast.error("Selecione uma propriedade.");
+      return;
+    }
+    if (!payComandaLookup.trim()) {
+      toast.error("Informe o número da comanda.");
+      return;
+    }
+    const found = findOpenComanda(selectedPropertyId, payComandaLookup);
+    if (!found || found.items.length === 0) {
+      setPayComandaSelected(null);
+      toast.error(`Nenhuma comanda aberta com o nº "${payComandaLookup.trim()}".`);
+      return;
+    }
+    setPayComandaSelected(found);
+    setComandaNumber(found.number);
+    setGuestName(found.guestName || "");
+    setOrderTargetMode("comanda");
+  };
+
+  const handleLoadOpenComandaToPay = (open?: OpenComanda | null) => {
+    const target =
+      open ??
+      (selectedPropertyId && comandaNumber.trim()
+        ? findOpenComanda(selectedPropertyId, comandaNumber)
+        : null);
+    if (!target || target.items.length === 0) {
+      toast.error("Comanda sem itens em aberto.");
+      return;
+    }
+    prepareOpenComandaForPayment(target);
+    setPayComandaModalOpen(false);
+    setShowPayment(true);
+    toast.message(`Comanda ${target.number} carregada para pagamento`);
+  };
+
+  const handlePayComandaFromModal = async (
+    method: "Cartão de Crédito" | "Cartão de Débito" | "PIX" | "Dinheiro"
+  ) => {
+    if (!payComandaSelected || payComandaSelected.items.length === 0) {
+      toast.error("Selecione uma comanda com itens.");
+      return;
+    }
+    if (method === "PIX" || method === "Cartão de Crédito" || method === "Cartão de Débito") {
+      prepareOpenComandaForPayment(payComandaSelected);
+      setPayComandaModalOpen(false);
+      setShowPayment(true);
+      // Reutiliza fluxos existentes (QR PIX / confirmação de cartão)
+      void handleFinishOrder(method);
+      return;
+    }
+
+    const saleItems = buildCartFromOpenComanda(payComandaSelected);
+    prepareOpenComandaForPayment(payComandaSelected);
+    const ok = await createPosTransaction(method, {
+      cartItems: saleItems,
+      targetMode: "comanda",
+      comandaValue: payComandaSelected.number,
+      guestValue: payComandaSelected.guestName || guestName,
+      closeComandaNumber: payComandaSelected.number,
+    });
+    if (!ok) return;
+    toast.success(`Comanda ${payComandaSelected.number} paga com sucesso!`);
+    clearCart();
+    setShowPayment(false);
+    setPayComandaModalOpen(false);
+    setPayComandaSelected(null);
+    setPayComandaLookup("");
+  };
+
+  const openOrderDetail = (order: RecentOrder) => {
+    setSelectedOrder(order);
+    setOrderDetailOpen(true);
+  };
+
+  const handleCancelSelectedOrder = async () => {
+    if (!selectedOrder || !selectedPropertyId) return;
+    if (selectedOrder.status === "cancelled" || selectedOrder.status === "refunded") {
+      toast.error("Este pedido já está cancelado.");
+      return;
+    }
+
+    setIsCancellingOrder(true);
+    try {
+      // Tenta estornar estoque pelos itens parseados da descrição
+      if (selectedOrder.lineItems.length > 0) {
+        try {
+          const inventoryRes = await api.getInventoryItems({ propertyId: selectedPropertyId });
+          const inventoryItems = (((inventoryRes.data as { items?: unknown[] } | undefined)?.items) ?? []) as Array<Record<string, unknown>>;
+          const inventoryRows: InventoryRow[] = inventoryItems.map((row) => ({
+            id: Number(row.id),
+            productId: Number(row.productId ?? 0),
+            currentStock: Number(row.currentStock ?? 0),
+          }));
+
+          const productByName = new Map(
+            products.map((p) => [p.name.trim().toLowerCase(), p] as const)
+          );
+          const restoreMovements: Array<{ itemId: number; type: "in"; quantity: number; reason: string }> = [];
+
+          for (const line of selectedOrder.lineItems) {
+            const product = productByName.get(line.name.trim().toLowerCase());
+            if (!product) continue;
+            const rowsForProduct = inventoryRows
+              .filter((r) => r.productId === product.id)
+              .sort((a, b) => a.id - b.id);
+            if (rowsForProduct.length === 0) continue;
+            restoreMovements.push({
+              itemId: rowsForProduct[0].id,
+              type: "in",
+              quantity: line.quantity,
+              reason: `Estorno PDV - cancelamento ${selectedOrder.transactionNumber}`,
+            });
+          }
+
+          if (restoreMovements.length > 0) {
+            await api.createInventoryMovementsBulk({ movements: restoreMovements });
+            const qtyByProductId = new Map<number, number>();
+            for (const line of selectedOrder.lineItems) {
+              const product = productByName.get(line.name.trim().toLowerCase());
+              if (!product) continue;
+              qtyByProductId.set(product.id, (qtyByProductId.get(product.id) ?? 0) + line.quantity);
+            }
+            setProducts((prev) =>
+              prev.map((p) => {
+                const restored = qtyByProductId.get(p.id) ?? 0;
+                if (!restored) return p;
+                return { ...p, stockQuantity: p.stockQuantity + restored };
+              })
+            );
+          }
+        } catch (stockErr) {
+          console.error("Falha ao estornar estoque no cancelamento:", stockErr);
+          toast.warning("Pedido cancelado no financeiro, mas o estorno de estoque falhou. Ajuste manualmente se necessário.");
+        }
+      }
+
+      const cancelNotes = `${selectedOrder.notes ? `${selectedOrder.notes} | ` : ""}cancelado_pdv: ${new Date().toISOString()}`;
+      const res = await api.updateTransaction(selectedOrder.id, {
+        status: "cancelled",
+        notes: cancelNotes,
+      });
+      if (!res.success) {
+        throw new Error(res.error?.message || "Não foi possível cancelar o pedido.");
+      }
+
+      toast.success("Pedido cancelado com sucesso.");
+      setCancelConfirmOpen(false);
+      setOrderDetailOpen(false);
+      setSelectedOrder(null);
+      await loadRecentPosOrders();
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Erro ao cancelar pedido.");
+    } finally {
+      setIsCancellingOrder(false);
+    }
   };
 
   const cartTotal = cart.reduce((acc, item) => acc + item.product.price * item.quantity, 0);
@@ -487,7 +1018,15 @@ export default function POSTerminal() {
 
   const createPosTransaction = async (
     method: "Conta do Quarto" | "Cartão de Crédito" | "Cartão de Débito" | "PIX" | "Dinheiro",
-    options?: { cardTransactionCode?: string }
+    options?: {
+      cardTransactionCode?: string;
+      cartItems?: CartItem[];
+      targetMode?: OrderTargetMode;
+      unitValue?: string;
+      comandaValue?: string;
+      guestValue?: string;
+      closeComandaNumber?: string | null;
+    }
   ) => {
     if (!selectedPropertyId) {
       toast.error("Selecione uma propriedade.");
@@ -497,6 +1036,18 @@ export default function POSTerminal() {
       toast.error("Categoria financeira de receita não encontrada.");
       return false;
     }
+    const saleItems = options?.cartItems ?? cart;
+    if (saleItems.length === 0) {
+      toast.error("Nenhum item para faturar.");
+      return false;
+    }
+    const saleTotal = saleItems.reduce((acc, item) => acc + item.product.price * item.quantity, 0);
+    const mode = options?.targetMode ?? orderTargetMode;
+    const unitValue = options?.unitValue ?? unit;
+    const comandaValue = options?.comandaValue ?? comandaNumber;
+    const guestValue = options?.guestValue ?? guestName;
+    const closeComandaNumber = options?.closeComandaNumber ?? payingOpenComandaNumber;
+
     const paymentMethodId =
       method === "PIX"
         ? getPaymentMethodId("pix")
@@ -506,10 +1057,17 @@ export default function POSTerminal() {
         ? getPaymentMethodId("credit")
         : getPaymentMethodId("cash");
 
-    const itemSummary = cart.map((i) => `${i.product.name} x${i.quantity}`).join(", ");
-    const unitPart = unit.trim() ? ` | Unidade: ${unit.trim()}` : "";
-    const guestPart = guestName.trim() ? ` | Hóspede: ${guestName.trim()}` : "";
-    const description = `PDV ${selectedProperty?.name || ""} - ${itemSummary}${unitPart}${guestPart}`.slice(0, 255);
+    const itemSummary = saleItems.map((i) => `${i.product.name} x${i.quantity}`).join(", ");
+    const unitPart =
+      mode === "unit" && unitValue.trim() ? ` | Unidade: ${unitValue.trim()}` : "";
+    const comandaPart =
+      mode === "comanda" && comandaValue.trim()
+        ? ` | Comanda: ${comandaValue.trim()}`
+        : "";
+    const guestPart = guestValue.trim()
+      ? ` | ${mode === "comanda" ? "Nome" : "Hóspede"}: ${guestValue.trim()}`
+      : "";
+    const description = `PDV ${selectedProperty?.name || ""} - ${itemSummary}${unitPart}${comandaPart}${guestPart}`.slice(0, 255);
 
     setIsSubmitting(true);
     let stockDebited = false;
@@ -525,7 +1083,7 @@ export default function POSTerminal() {
       }));
 
       const reason = `Venda PDV - ${method}`;
-      const outMovements = cart.flatMap((item) =>
+      const outMovements = saleItems.flatMap((item) =>
         buildOutMovementsForProduct(inventoryRows, item.product.id, item.quantity, item.product.name, reason)
       );
 
@@ -540,7 +1098,7 @@ export default function POSTerminal() {
 
       // Ajuste visual imediato no card de produto após baixa de estoque.
       const qtyByProductId = new Map<number, number>();
-      for (const item of cart) qtyByProductId.set(item.product.id, item.quantity);
+      for (const item of saleItems) qtyByProductId.set(item.product.id, item.quantity);
       setProducts((prev) =>
         prev.map((p) => {
           const sold = qtyByProductId.get(p.id) ?? 0;
@@ -554,7 +1112,7 @@ export default function POSTerminal() {
         type: "income",
         financialCategoryId: incomeCategoryId,
         description,
-        amount: Number(cartTotal.toFixed(2)),
+        amount: Number(saleTotal.toFixed(2)),
         currency: "BRL",
         status: "completed",
         paymentMethodId,
@@ -566,6 +1124,11 @@ export default function POSTerminal() {
       if (!res.success) {
         toast.error(res.error?.message || "Não foi possível registrar a venda.");
         return false;
+      }
+      if (closeComandaNumber && selectedPropertyId) {
+        removeOpenComanda(selectedPropertyId, closeComandaNumber);
+        refreshOpenComandas();
+        setPayingOpenComandaNumber(null);
       }
       await loadRecentPosOrders();
       return true;
@@ -595,12 +1158,20 @@ export default function POSTerminal() {
   };
 
   const handleFinishOrder = async (paymentMethod: "Conta do Quarto" | "Cartão de Crédito" | "Cartão de Débito" | "PIX" | "Dinheiro") => {
+    if (paymentMethod === "Conta do Quarto" && orderTargetMode === "comanda") {
+      toast.error("Conta do quarto só funciona no modo Unidade. Use PIX, cartão ou dinheiro para day-use/comanda.");
+      return;
+    }
     if (paymentMethod === "Conta do Quarto" && !unit.trim()) {
       toast.error(`Informe o número do ${currentProperty.unitLabel.toLowerCase()}`);
       return;
     }
     if (paymentMethod === "Conta do Quarto" && unit.trim() && !clientConfirmedUnitCharge) {
       toast.error("Confirme com o cliente e marque a caixa de confirmação antes de lançar na conta da unidade.");
+      return;
+    }
+    if (orderTargetMode === "comanda" && !comandaNumber.trim() && !guestName.trim()) {
+      toast.error("Informe o número da comanda ou o nome do cliente (day-use).");
       return;
     }
     if (paymentMethod === "Cartão de Crédito" || paymentMethod === "Cartão de Débito") {
@@ -871,36 +1442,54 @@ export default function POSTerminal() {
 
         {/* Recent Orders - Bottom */}
         <div className="mt-4 pt-4 border-t border-border rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 text-white shadow-lg px-3 pb-3">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold flex items-center gap-2">
+          <div className="flex items-center justify-between mb-3 gap-2">
+            <h3 className="font-semibold flex items-center gap-2 shrink-0">
               <Receipt className="w-4 h-4 text-slate-200" />
               Últimos Pedidos
             </h3>
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 border-amber-400/40 bg-amber-500/15 text-amber-50 hover:bg-amber-500/25"
+                onClick={() => openPayComandaModal()}
+              >
+                <Hash className="w-3.5 h-3.5" />
+                Pagar comanda
+                {openComandasCount > 0 && (
+                  <Badge className="h-5 px-1.5 bg-amber-400 text-slate-950 border-0 text-[10px]">
+                    {openComandasCount}
+                  </Badge>
+                )}
+              </Button>
+              {recentOrders.length > RECENT_ORDERS_PAGE_SIZE && (
+                <span className="text-[11px] text-slate-400 tabular-nums">
+                  {ordersPage + 1}/{ordersPageCount}
+                </span>
+              )}
+              <Button
+                variant="outline"
                 size="icon"
-                className="h-8 w-8 border-white/20 bg-white/5 text-white hover:bg-white/10"
-                onClick={() => scrollRecentOrders("left")}
-                aria-label="Rolar pedidos para a esquerda"
+                disabled={ordersPage <= 0}
+                className="h-8 w-8 border-white/20 bg-white/5 text-white hover:bg-white/10 disabled:opacity-30"
+                onClick={() => goRecentOrdersPage("left")}
+                aria-label="Pedidos anteriores"
               >
                 <ChevronLeft className="w-4 h-4" />
               </Button>
               <Button
                 variant="outline"
                 size="icon"
-                className="h-8 w-8 border-white/20 bg-white/5 text-white hover:bg-white/10"
-                onClick={() => scrollRecentOrders("right")}
-                aria-label="Rolar pedidos para a direita"
+                disabled={ordersPage >= ordersPageCount - 1 || recentOrders.length === 0}
+                className="h-8 w-8 border-white/20 bg-white/5 text-white hover:bg-white/10 disabled:opacity-30"
+                onClick={() => goRecentOrdersPage("right")}
+                aria-label="Próximos pedidos"
               >
                 <ChevronRight className="w-4 h-4" />
               </Button>
             </div>
           </div>
-          <div
-            ref={recentOrdersScrollRef}
-            className="flex gap-3 overflow-x-auto pb-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-          >
+          <div className="flex gap-3 overflow-hidden pb-1">
             {recentOrders.length === 0 && (
               <Card className="min-w-[280px] flex-shrink-0 border-white/10 bg-white/5 backdrop-blur-sm">
                 <CardContent className="p-4 text-sm text-slate-300">
@@ -908,10 +1497,26 @@ export default function POSTerminal() {
                 </CardContent>
               </Card>
             )}
-            {recentOrders.slice(0, 20).map((order) => {
-              const status = statusConfig[order.status];
+            {visibleRecentOrders.map((order) => {
+              const status = statusConfig[order.status] ?? statusConfig.pending;
               return (
-                <Card key={order.id} className="min-w-[180px] flex-shrink-0 border-white/10 bg-white/5 backdrop-blur-sm">
+                <Card
+                  key={order.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openOrderDetail(order)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openOrderDetail(order);
+                    }
+                  }}
+                  className={cn(
+                    "min-w-[180px] flex-shrink-0 border-white/10 bg-white/5 backdrop-blur-sm cursor-pointer transition-all",
+                    "hover:bg-white/10 hover:border-white/25 hover:scale-[1.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400/60",
+                    (order.status === "cancelled" || order.status === "refunded") && "opacity-60"
+                  )}
+                >
                   <CardContent className="p-3">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-mono text-sm font-medium text-white">{order.transactionNumber}</span>
@@ -920,8 +1525,26 @@ export default function POSTerminal() {
                       </Badge>
                     </div>
                     <div className="flex items-center gap-2 text-sm text-slate-300 mb-1">
-                      <BedDouble className="w-3 h-3" />
-                      <span>{order.unit ? `${currentProperty.unitLabel} ${order.unit}` : "Sem unidade"}</span>
+                      {order.comanda ? (
+                        <>
+                          <Receipt className="w-3 h-3" />
+                          <span>
+                            Comanda {order.comanda}
+                            {order.guest ? ` · ${order.guest}` : ""}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <BedDouble className="w-3 h-3" />
+                          <span>
+                            {order.unit
+                              ? `${currentProperty.unitLabel} ${order.unit}`
+                              : order.guest
+                                ? order.guest
+                                : "Sem unidade"}
+                          </span>
+                        </>
+                      )}
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-slate-400">{order.time} {order.items > 0 ? `• ${order.items} itens` : ""}</span>
@@ -943,7 +1566,7 @@ export default function POSTerminal() {
           <>
             {/* Cart Header */}
             <div className="p-4 border-b border-white/10 shrink-0">
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-3">
                 <h2 className="text-lg font-bold flex items-center gap-2 text-white">
                   <ShoppingCart className="w-5 h-5 text-slate-200" />
                   Pedido
@@ -952,81 +1575,214 @@ export default function POSTerminal() {
                   )}
                 </h2>
                 {cart.length > 0 && (
-                  <Button variant="ghost" size="sm" onClick={clearCart} className="text-slate-200 hover:bg-white/10 hover:text-white">
+                  <Button variant="ghost" size="sm" onClick={() => clearCart()} className="text-slate-200 hover:bg-white/10 hover:text-white">
                     <Trash2 className="w-4 h-4" />
                   </Button>
                 )}
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full mb-3 h-10 gap-2 border-amber-400/40 bg-amber-500/15 text-amber-50 hover:bg-amber-500/25"
+                onClick={() => openPayComandaModal()}
+              >
+                <Receipt className="w-4 h-4" />
+                Pagar Comanda
+                {openComandasCount > 0 && (
+                  <Badge className="ml-auto bg-amber-400 text-slate-950 border-0">
+                    {openComandasCount}
+                  </Badge>
+                )}
+              </Button>
 
-              {/* Unit & Guest */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs text-slate-300 flex items-center gap-1">
-                    <currentProperty.icon className="w-3 h-3" />
-                    {currentProperty.unitLabel}
-                  </label>
-                  <Input
-                    placeholder="Nº"
-                    value={unit}
-                    onChange={(e) => {
-                      setUnit(e.target.value);
-                      setClientConfirmedUnitCharge(false);
-                    }}
-                    className="h-10 bg-white/10 border-white/20 text-white placeholder:text-slate-500"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-slate-300 flex items-center gap-1">
-                    <User className="w-3 h-3" />
-                    Hóspede
-                  </label>
-                  <Input
-                    placeholder="Nome"
-                    value={guestName}
-                    onChange={(e) => setGuestName(e.target.value)}
-                    className="h-10 bg-white/10 border-white/20 text-white placeholder:text-slate-500"
-                  />
-                </div>
+              {/* Destino do pedido: Unidade (hóspede) ou Day-use / Comanda */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrderTargetMode("unit");
+                    setComandaNumber("");
+                    setClientConfirmedUnitCharge(false);
+                  }}
+                  className={cn(
+                    "h-9 rounded-lg text-xs font-medium border transition-colors flex items-center justify-center gap-1.5",
+                    orderTargetMode === "unit"
+                      ? "bg-blue-500/20 border-blue-400/40 text-blue-100"
+                      : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10"
+                  )}
+                >
+                  <BedDouble className="w-3.5 h-3.5" />
+                  Unidade
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrderTargetMode("comanda");
+                    setUnit("");
+                    setClientConfirmedUnitCharge(false);
+                    setUnitOccupants([]);
+                    setUnitOccupantsHint(null);
+                    setResolvedUnitDisplay(null);
+                  }}
+                  className={cn(
+                    "h-9 rounded-lg text-xs font-medium border transition-colors flex items-center justify-center gap-1.5",
+                    orderTargetMode === "comanda"
+                      ? "bg-amber-500/20 border-amber-400/40 text-amber-100"
+                      : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10"
+                  )}
+                >
+                  <Receipt className="w-3.5 h-3.5" />
+                  Day-use / Comanda
+                </button>
               </div>
 
-              {unit.trim() && (
-                <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
-                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
-                    <Users className="h-3.5 w-3.5" />
-                    Pessoas na unidade (hoje)
-                  </div>
-                  {unitOccupantsLoading ? (
-                    <div className="flex items-center gap-2 text-sm text-slate-400">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Consultando reservas...
+              {orderTargetMode === "unit" ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-300 flex items-center gap-1">
+                        <currentProperty.icon className="w-3 h-3" />
+                        {currentProperty.unitLabel}
+                      </label>
+                      <Input
+                        placeholder="Nº"
+                        value={unit}
+                        onChange={(e) => {
+                          setUnit(e.target.value);
+                          setClientConfirmedUnitCharge(false);
+                        }}
+                        className="h-10 bg-white/10 border-white/20 text-white placeholder:text-slate-500"
+                      />
                     </div>
-                  ) : unitOccupants.length > 0 ? (
-                    <ul className="space-y-1.5 text-sm text-white">
-                      {unitOccupants.map((n) => (
-                        <li key={n} className="flex items-center gap-2">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0" />
-                          {n}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-sm text-amber-200/90">{unitOccupantsHint || "Digite o número para buscar hóspedes."}</p>
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-300 flex items-center gap-1">
+                        <User className="w-3 h-3" />
+                        Hóspede
+                      </label>
+                      <Input
+                        placeholder="Nome"
+                        value={guestName}
+                        onChange={(e) => setGuestName(e.target.value)}
+                        className="h-10 bg-white/10 border-white/20 text-white placeholder:text-slate-500"
+                      />
+                    </div>
+                  </div>
+
+                  {unit.trim() && (
+                    <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+                        <Users className="h-3.5 w-3.5" />
+                        Pessoas na unidade (hoje)
+                      </div>
+                      {unitOccupantsLoading ? (
+                        <div className="flex items-center gap-2 text-sm text-slate-400">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Consultando reservas...
+                        </div>
+                      ) : unitOccupants.length > 0 ? (
+                        <ul className="space-y-1.5 text-sm text-white">
+                          {unitOccupants.map((n) => (
+                            <li key={n} className="flex items-center gap-2">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0" />
+                              {n}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-sm text-amber-200/90">{unitOccupantsHint || "Digite o número para buscar hóspedes."}</p>
+                      )}
+                      {resolvedUnitDisplay && !unitOccupantsLoading && (
+                        <p className="text-[11px] text-slate-500 border-t border-white/10 pt-2">
+                          Unidade: {resolvedUnitDisplay}
+                        </p>
+                      )}
+                      <label className="flex items-start gap-2 cursor-pointer pt-1">
+                        <Checkbox
+                          checked={clientConfirmedUnitCharge}
+                          onCheckedChange={(v) => setClientConfirmedUnitCharge(v === true)}
+                          className="mt-0.5 border-white/40 data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                        />
+                        <span className="text-xs text-slate-300 leading-snug">
+                          O cliente que está pedindo confirmou o lançamento na conta desta unidade e está ciente das pessoas listadas acima.
+                        </span>
+                      </label>
+                    </div>
                   )}
-                  {resolvedUnitDisplay && !unitOccupantsLoading && (
-                    <p className="text-[11px] text-slate-500 border-t border-white/10 pt-2">
-                      Unidade: {resolvedUnitDisplay}
+                </>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-300 flex items-center gap-1">
+                        <Receipt className="w-3 h-3" />
+                        Comanda
+                      </label>
+                      <Input
+                        placeholder="Nº comanda"
+                        value={comandaNumber}
+                        onChange={(e) => setComandaNumber(e.target.value)}
+                        className="h-10 bg-white/10 border-white/20 text-white placeholder:text-slate-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-300 flex items-center gap-1">
+                        <User className="w-3 h-3" />
+                        Nome
+                      </label>
+                      <Input
+                        placeholder="Nome do cliente"
+                        value={guestName}
+                        onChange={(e) => setGuestName(e.target.value)}
+                        className="h-10 bg-white/10 border-white/20 text-white placeholder:text-slate-500"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-snug">
+                    Lance itens na comanda sem pagar agora. No final, carregue a comanda e escolha o pagamento.
+                  </p>
+                  {activeOpenComanda && (
+                    <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-amber-100">
+                          Comanda {activeOpenComanda.number} em aberto
+                        </p>
+                        <Badge className="bg-amber-500/20 text-amber-100 border-0">
+                          {openComandaItemsCount(activeOpenComanda)} itens
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-amber-50">
+                        Total: R${" "}
+                        {openComandaTotal(activeOpenComanda).toLocaleString("pt-BR", {
+                          minimumFractionDigits: 2,
+                        })}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="border-amber-400/40 bg-transparent text-amber-50 hover:bg-amber-500/20"
+                          onClick={() => openPrintModal("comanda")}
+                        >
+                          <Printer className="w-3.5 h-3.5 mr-1" />
+                          Imprimir
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="bg-amber-500 hover:bg-amber-600 text-slate-950"
+                          onClick={() => openPayComandaModal(activeOpenComanda.number)}
+                        >
+                          Pagar agora
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  {openComandasCount > 0 && !activeOpenComanda && (
+                    <p className="text-[11px] text-slate-500">
+                      {openComandasCount} comanda(s) aberta(s) nesta propriedade. Digite o nº para carregar.
                     </p>
                   )}
-                  <label className="flex items-start gap-2 cursor-pointer pt-1">
-                    <Checkbox
-                      checked={clientConfirmedUnitCharge}
-                      onCheckedChange={(v) => setClientConfirmedUnitCharge(v === true)}
-                      className="mt-0.5 border-white/40 data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
-                    />
-                    <span className="text-xs text-slate-300 leading-snug">
-                      O cliente que está pedindo confirmou o lançamento na conta desta unidade e está ciente das pessoas listadas acima.
-                    </span>
-                  </label>
                 </div>
               )}
             </div>
@@ -1093,6 +1849,17 @@ export default function POSTerminal() {
                   R$ {cartTotal.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                 </span>
               </div>
+              {orderTargetMode === "comanda" && (
+                <Button
+                  variant="outline"
+                  className="w-full h-12 gap-2 border-amber-400/40 bg-amber-500/10 text-amber-50 hover:bg-amber-500/20"
+                  disabled={cart.length === 0 || !comandaNumber.trim() || isSubmitting}
+                  onClick={handleAddCartToComanda}
+                >
+                  <Receipt className="w-4 h-4" />
+                  Adicionar à Comanda (pagar depois)
+                </Button>
+              )}
               <Button
                 className="w-full h-14 text-lg gap-2 bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white border-0"
                 disabled={cart.length === 0}
@@ -1100,6 +1867,15 @@ export default function POSTerminal() {
               >
                 <CreditCard className="w-5 h-5" />
                 Finalizar Pedido
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full gap-2 border-white/20 bg-white/5 text-white hover:bg-white/10"
+                disabled={cart.length === 0}
+                onClick={() => openPrintModal("cart")}
+              >
+                <Printer className="w-4 h-4" />
+                Imprimir Comanda
               </Button>
             </div>
           </>
@@ -1119,10 +1895,23 @@ export default function POSTerminal() {
               {/* Order Summary */}
               <Card className="border-white/10 bg-white/5 backdrop-blur-sm shadow-none">
                 <CardContent className="p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-slate-400">{currentProperty.unitLabel}</span>
-                    <span className="font-semibold text-white">{unit || "-"}</span>
-                  </div>
+                  {orderTargetMode === "comanda" ? (
+                    <>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-slate-400">Comanda</span>
+                        <span className="font-semibold text-white">{comandaNumber || "-"}</span>
+                      </div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-slate-400">Nome</span>
+                        <span className="font-semibold text-white">{guestName || "-"}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-slate-400">{currentProperty.unitLabel}</span>
+                      <span className="font-semibold text-white">{unit || "-"}</span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-slate-400">Itens</span>
                     <span className="font-semibold text-white">{cartItemsCount}</span>
@@ -1140,15 +1929,25 @@ export default function POSTerminal() {
               <div className="space-y-3">
                 <Button
                   variant="outline"
-                  className="w-full h-16 justify-start gap-4 text-left border-white/20 bg-white/5 text-white hover:bg-white/10"
+                  disabled={orderTargetMode === "comanda"}
+                  className="w-full h-16 justify-start gap-4 text-left border-white/20 bg-white/5 text-white hover:bg-white/10 disabled:opacity-40"
                   onClick={() => handleFinishOrder("Conta do Quarto")}
+                  title={
+                    orderTargetMode === "comanda"
+                      ? "Disponível apenas no modo Unidade"
+                      : undefined
+                  }
                 >
                   <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center">
                     <BedDouble className="w-6 h-6 text-white" />
                   </div>
                   <div>
                     <p className="font-semibold">Lançar na Conta</p>
-                    <p className="text-sm text-slate-400">Débito no checkout</p>
+                    <p className="text-sm text-slate-400">
+                      {orderTargetMode === "comanda"
+                        ? "Indisponível no day-use/comanda"
+                        : "Débito no checkout"}
+                    </p>
                   </div>
                 </Button>
 
@@ -1211,8 +2010,24 @@ export default function POSTerminal() {
             </div>
 
             {/* Print Button */}
-            <div className="p-4 border-t border-white/10 shrink-0">
-              <Button variant="outline" className="w-full gap-2 border-white/20 bg-white/5 text-white hover:bg-white/10">
+            <div className="p-4 border-t border-white/10 shrink-0 space-y-2">
+              {orderTargetMode === "comanda" && (
+                <Button
+                  variant="outline"
+                  className="w-full gap-2 border-amber-400/40 bg-amber-500/10 text-amber-50 hover:bg-amber-500/20"
+                  disabled={cart.length === 0 || !comandaNumber.trim() || isSubmitting}
+                  onClick={handleAddCartToComanda}
+                >
+                  <Receipt className="w-4 h-4" />
+                  Adicionar à Comanda (pagar depois)
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                className="w-full gap-2 border-white/20 bg-white/5 text-white hover:bg-white/10"
+                disabled={cart.length === 0}
+                onClick={() => openPrintModal("cart")}
+              >
                 <Printer className="w-4 h-4" />
                 Imprimir Comanda
               </Button>
@@ -1329,6 +2144,514 @@ export default function POSTerminal() {
                 {isSubmitting ? "Registrando..." : "Concluir pedido"}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Detalhes do pedido recente */}
+      <Dialog
+        open={orderDetailOpen}
+        onOpenChange={(open) => {
+          setOrderDetailOpen(open);
+          if (!open) setSelectedOrder(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl p-0 overflow-hidden border-white/10 bg-slate-950 text-white sm:rounded-2xl">
+          {selectedOrder && (
+            <div className="flex flex-col max-h-[85vh]">
+              <div className="relative px-6 pt-6 pb-5 border-b border-white/10 bg-gradient-to-br from-slate-900 via-slate-900 to-orange-950/40">
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_rgba(249,115,22,0.18),_transparent_55%)] pointer-events-none" />
+                <DialogHeader className="relative space-y-3">
+                  <div className="flex items-start justify-between gap-3 pr-6">
+                    <div>
+                      <DialogTitle className="text-xl text-white flex items-center gap-2">
+                        <Receipt className="h-5 w-5 text-orange-400" />
+                        Pedido {selectedOrder.transactionNumber}
+                      </DialogTitle>
+                      <DialogDescription className="text-slate-400 mt-1">
+                        Detalhes completos do lançamento no PDV
+                      </DialogDescription>
+                    </div>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "shrink-0",
+                        (statusConfig[selectedOrder.status] ?? statusConfig.pending).color
+                      )}
+                    >
+                      {(statusConfig[selectedOrder.status] ?? statusConfig.pending).label}
+                    </Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedOrder.propertyName && (
+                      <Badge variant="outline" className="border-white/15 bg-white/5 text-slate-200">
+                        <Building2 className="h-3 w-3 mr-1" />
+                        {selectedOrder.propertyName}
+                      </Badge>
+                    )}
+                    {(selectedOrder.paymentLabel || selectedOrder.paymentMethodName) && (
+                      <Badge variant="outline" className="border-white/15 bg-white/5 text-slate-200">
+                        <CreditCard className="h-3 w-3 mr-1" />
+                        {selectedOrder.paymentLabel || selectedOrder.paymentMethodName}
+                      </Badge>
+                    )}
+                  </div>
+                </DialogHeader>
+              </div>
+
+              <ScrollArea className="flex-1 px-6 py-5">
+                <div className="space-y-5 pr-2">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-400 flex items-center gap-1 mb-1">
+                        <CalendarClock className="h-3 w-3" /> Data / hora
+                      </p>
+                      <p className="text-sm font-medium text-white">
+                        {new Date(selectedOrder.createdAt).toLocaleString("pt-BR")}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-400 flex items-center gap-1 mb-1">
+                        <Hash className="h-3 w-3" /> Total
+                      </p>
+                      <p className="text-lg font-bold text-emerald-300">
+                        R$ {selectedOrder.total.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">
+                        {selectedOrder.comanda ? "Comanda" : currentProperty.unitLabel}
+                      </p>
+                      <p className="text-sm font-medium text-white flex items-center gap-1.5">
+                        {selectedOrder.comanda ? (
+                          <>
+                            <Receipt className="h-3.5 w-3.5 text-amber-400" />
+                            {selectedOrder.comanda}
+                          </>
+                        ) : selectedOrder.unit ? (
+                          <>
+                            <BedDouble className="h-3.5 w-3.5 text-blue-400" />
+                            {selectedOrder.unit}
+                          </>
+                        ) : (
+                          <span className="text-slate-500">—</span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3 sm:col-span-2">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">
+                        {selectedOrder.comanda ? "Nome" : "Hóspede"}
+                      </p>
+                      <p className="text-sm font-medium text-white flex items-center gap-1.5">
+                        <User className="h-3.5 w-3.5 text-slate-400" />
+                        {selectedOrder.guest || <span className="text-slate-500">Não informado</span>}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2">
+                      <Package className="h-4 w-4 text-orange-400" />
+                      <h4 className="text-sm font-semibold text-white">Itens do pedido</h4>
+                      <Badge className="ml-auto bg-orange-500/20 text-orange-200 border-0">
+                        {selectedOrder.lineItems.length || selectedOrder.items}
+                      </Badge>
+                    </div>
+                    {selectedOrder.lineItems.length > 0 ? (
+                      <ul className="divide-y divide-white/5">
+                        {selectedOrder.lineItems.map((item, idx) => (
+                          <li key={`${item.name}-${idx}`} className="flex items-center justify-between px-4 py-3 text-sm">
+                            <span className="text-slate-200">{item.name}</span>
+                            <span className="font-mono text-slate-400">x{item.quantity}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="px-4 py-6 text-sm text-slate-400 text-center">
+                        Itens não identificados neste lançamento.
+                      </p>
+                    )}
+                  </div>
+
+                  {(selectedOrder.notes || selectedOrder.description) && (
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-400">Observações / descrição</p>
+                      {selectedOrder.notes && (
+                        <p className="text-xs text-slate-300 break-words">{selectedOrder.notes}</p>
+                      )}
+                      <p className="text-[11px] text-slate-500 break-words font-mono leading-relaxed">
+                        {selectedOrder.description}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+
+              <div className="px-6 py-4 border-t border-white/10 bg-slate-900/80 flex flex-wrap items-center justify-between gap-3">
+                <Button
+                  variant="outline"
+                  className="border-white/20 bg-white/5 text-white hover:bg-white/10"
+                  onClick={() => {
+                    setOrderDetailOpen(false);
+                    setSelectedOrder(null);
+                  }}
+                >
+                  Fechar
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={
+                    isCancellingOrder ||
+                    selectedOrder.status === "cancelled" ||
+                    selectedOrder.status === "refunded"
+                  }
+                  className="gap-2"
+                  onClick={() => setCancelConfirmOpen(true)}
+                >
+                  <Ban className="h-4 w-4" />
+                  {selectedOrder.status === "cancelled" || selectedOrder.status === "refunded"
+                    ? "Já cancelado"
+                    : "Cancelar pedido"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={cancelConfirmOpen} onOpenChange={setCancelConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancelar este pedido?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O lançamento {selectedOrder?.transactionNumber} será marcado como cancelado no financeiro
+              e o sistema tentará estornar o estoque dos itens. Esta ação não pode ser desfeita pelo PDV.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isCancellingOrder}>Voltar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isCancellingOrder}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault();
+                void handleCancelSelectedOrder();
+              }}
+            >
+              {isCancellingOrder ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Cancelando...
+                </>
+              ) : (
+                "Confirmar cancelamento"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Modal: buscar comanda e pagar total */}
+      <Dialog
+        open={payComandaModalOpen}
+        onOpenChange={(open) => {
+          setPayComandaModalOpen(open);
+          if (!open) {
+            setPayComandaSelected(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl p-0 overflow-hidden border-white/10 bg-slate-950 text-white sm:rounded-2xl max-h-[90vh] flex flex-col">
+          <div className="px-6 pt-6 pb-4 border-b border-white/10 bg-gradient-to-br from-slate-900 via-slate-900 to-amber-950/40 shrink-0">
+            <DialogHeader>
+              <DialogTitle className="text-white flex items-center gap-2">
+                <Receipt className="h-5 w-5 text-amber-400" />
+                Pagar comanda
+              </DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Informe o número, confira todos os itens e finalize o pagamento.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex gap-2">
+              <Input
+                value={payComandaLookup}
+                onChange={(e) => setPayComandaLookup(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleLookupPayComanda();
+                  }
+                }}
+                placeholder="Nº da comanda"
+                className="h-11 bg-white/10 border-white/20 text-white placeholder:text-slate-500"
+              />
+              <Button
+                type="button"
+                className="h-11 px-5 bg-amber-500 hover:bg-amber-600 text-slate-950"
+                onClick={handleLookupPayComanda}
+              >
+                Buscar
+              </Button>
+            </div>
+          </div>
+
+          <ScrollArea className="flex-1 min-h-0">
+            <div className="px-6 py-4 space-y-4">
+              {allOpenComandas.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Comandas abertas</p>
+                  <div className="flex flex-wrap gap-2">
+                    {allOpenComandas.map((c) => (
+                      <button
+                        key={c.number}
+                        type="button"
+                        onClick={() => {
+                          setPayComandaLookup(c.number);
+                          setPayComandaSelected(c);
+                          setComandaNumber(c.number);
+                          setGuestName(c.guestName || "");
+                          setOrderTargetMode("comanda");
+                        }}
+                        className={cn(
+                          "rounded-lg border px-3 py-2 text-left text-sm transition-colors",
+                          payComandaSelected?.number === c.number
+                            ? "border-amber-400/50 bg-amber-500/20 text-amber-50"
+                            : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
+                        )}
+                      >
+                        <span className="font-semibold">#{c.number}</span>
+                        <span className="block text-[11px] text-slate-400">
+                          {c.guestName || "Sem nome"} · {openComandaItemsCount(c)} itens · R${" "}
+                          {openComandaTotal(c).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {payComandaSelected ? (
+                <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-white/10 flex flex-wrap items-center gap-2 justify-between">
+                    <div>
+                      <p className="font-semibold text-white">Comanda {payComandaSelected.number}</p>
+                      <p className="text-xs text-slate-400">
+                        {payComandaSelected.guestName || "Cliente não informado"} · atualizada{" "}
+                        {new Date(payComandaSelected.updatedAt).toLocaleString("pt-BR")}
+                      </p>
+                    </div>
+                    <Badge className="bg-amber-500/20 text-amber-100 border-0">
+                      {openComandaItemsCount(payComandaSelected)} itens
+                    </Badge>
+                  </div>
+                  <ul className="divide-y divide-white/5 max-h-56 overflow-y-auto">
+                    {payComandaSelected.items.map((item) => (
+                      <li
+                        key={`${item.productId}-${item.name}`}
+                        className="flex items-center justify-between gap-3 px-4 py-3 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-slate-100 truncate">{item.name}</p>
+                          <p className="text-xs text-slate-500">
+                            R$ {item.price.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} un.
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="font-mono text-slate-300">x{item.quantity}</p>
+                          <p className="font-semibold text-emerald-300">
+                            R${" "}
+                            {(item.price * item.quantity).toLocaleString("pt-BR", {
+                              minimumFractionDigits: 2,
+                            })}
+                          </p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="px-4 py-3 border-t border-white/10 flex items-center justify-between bg-black/20">
+                    <span className="font-medium text-slate-200">Total da comanda</span>
+                    <span className="text-xl font-bold text-emerald-300">
+                      R${" "}
+                      {openComandaTotal(payComandaSelected).toLocaleString("pt-BR", {
+                        minimumFractionDigits: 2,
+                      })}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-white/15 p-8 text-center text-slate-400 text-sm">
+                  Digite o número da comanda e clique em Buscar, ou selecione uma comanda aberta acima.
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+
+          <div className="px-6 py-4 border-t border-white/10 bg-slate-900/90 space-y-3 shrink-0">
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                variant="outline"
+                className="border-white/20 bg-white/5 text-white hover:bg-white/10"
+                disabled={!payComandaSelected}
+                onClick={() => {
+                  if (!payComandaSelected) return;
+                  setPrintSource("comanda");
+                  setOpenComandaPreview(payComandaSelected);
+                  setPrintModalOpen(true);
+                }}
+              >
+                <Printer className="w-4 h-4 mr-2" />
+                Imprimir
+              </Button>
+              <Button
+                variant="outline"
+                className="border-amber-400/40 bg-amber-500/10 text-amber-50 hover:bg-amber-500/20"
+                disabled={!payComandaSelected || isSubmitting}
+                onClick={() => handleLoadOpenComandaToPay(payComandaSelected)}
+              >
+                Ir para pagamento
+              </Button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                className="bg-emerald-600 hover:bg-emerald-700"
+                disabled={!payComandaSelected || isSubmitting}
+                onClick={() => void handlePayComandaFromModal("PIX")}
+              >
+                <QrCode className="w-4 h-4 mr-2" />
+                PIX
+              </Button>
+              <Button
+                className="bg-slate-600 hover:bg-slate-500"
+                disabled={!payComandaSelected || isSubmitting}
+                onClick={() => void handlePayComandaFromModal("Dinheiro")}
+              >
+                <Banknote className="w-4 h-4 mr-2" />
+                Dinheiro
+              </Button>
+              <Button
+                className="bg-purple-600 hover:bg-purple-700"
+                disabled={!payComandaSelected || isSubmitting}
+                onClick={() => void handlePayComandaFromModal("Cartão de Crédito")}
+              >
+                <CreditCard className="w-4 h-4 mr-2" />
+                Crédito
+              </Button>
+              <Button
+                className="bg-orange-600 hover:bg-orange-700"
+                disabled={!payComandaSelected || isSubmitting}
+                onClick={() => void handlePayComandaFromModal("Cartão de Débito")}
+              >
+                <CreditCard className="w-4 h-4 mr-2" />
+                Débito
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Preview / impressão de comanda */}
+      <Dialog open={printModalOpen} onOpenChange={setPrintModalOpen}>
+        <DialogContent className="max-w-md p-0 overflow-hidden border-white/10 bg-slate-950 text-white sm:rounded-2xl">
+          <div className="px-5 pt-5 pb-4 border-b border-white/10 bg-gradient-to-br from-slate-900 to-orange-950/30">
+            <DialogHeader>
+              <DialogTitle className="text-white flex items-center gap-2">
+                <Printer className="h-5 w-5 text-orange-400" />
+                Comanda para impressão
+              </DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Confira os itens e envie para a impressora.
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+
+          <div className="px-5 py-4 space-y-4">
+            <div className="rounded-xl border border-dashed border-white/20 bg-white text-slate-900 p-4 font-mono text-sm shadow-inner">
+              <p className="text-center font-bold text-base mb-1">COMANDA PDV</p>
+              <p className="text-center text-xs text-slate-500 mb-3">
+                {selectedProperty?.name || "UniStays"} · {new Date().toLocaleString("pt-BR")}
+              </p>
+              <div className="space-y-1 text-xs mb-3">
+                {(printSource === "comanda"
+                  ? openComandaPreview?.number
+                  : orderTargetMode === "comanda"
+                    ? comandaNumber
+                    : null) && (
+                  <p>
+                    <strong>Comanda:</strong>{" "}
+                    {printSource === "comanda" ? openComandaPreview?.number : comandaNumber}
+                  </p>
+                )}
+                {orderTargetMode === "unit" && unit.trim() && (
+                  <p>
+                    <strong>{currentProperty.unitLabel}:</strong> {unit}
+                  </p>
+                )}
+                <p>
+                  <strong>Cliente:</strong>{" "}
+                  {(printSource === "comanda"
+                    ? openComandaPreview?.guestName || guestName
+                    : guestName) || "—"}
+                </p>
+              </div>
+              <div className="border-t border-dashed border-slate-300 pt-2 space-y-1.5">
+                {(printSource === "comanda" && openComandaPreview
+                  ? openComandaPreview.items.map((i) => ({
+                      key: `${i.productId}-${i.name}`,
+                      name: i.name,
+                      quantity: i.quantity,
+                      price: i.price,
+                    }))
+                  : cart.map((i) => ({
+                      key: String(i.product.id),
+                      name: i.product.name,
+                      quantity: i.quantity,
+                      price: i.product.price,
+                    }))
+                ).map((item) => (
+                  <div key={item.key} className="flex justify-between gap-2">
+                    <span className="truncate">
+                      {item.quantity}x {item.name}
+                    </span>
+                    <span className="shrink-0">
+                      R${" "}
+                      {(item.price * item.quantity).toLocaleString("pt-BR", {
+                        minimumFractionDigits: 2,
+                      })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between font-bold text-base border-t border-slate-900 mt-3 pt-2">
+                <span>TOTAL</span>
+                <span>
+                  R${" "}
+                  {(printSource === "comanda" && openComandaPreview
+                    ? openComandaTotal(openComandaPreview)
+                    : cartTotal
+                  ).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="px-5 py-4 border-t border-white/10 flex gap-2 justify-end bg-slate-900/80">
+            <Button
+              variant="outline"
+              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
+              onClick={() => setPrintModalOpen(false)}
+            >
+              Fechar
+            </Button>
+            <Button
+              className="bg-orange-500 hover:bg-orange-600 text-white gap-2"
+              onClick={handlePrintComanda}
+            >
+              <Printer className="h-4 w-4" />
+              Imprimir
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
